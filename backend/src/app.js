@@ -5,6 +5,7 @@ import cors from "cors";
 import express from "express";
 import helmet from "helmet";
 import morgan from "morgan";
+import { handleBankPaymentPayload, validateBankWebhookAuth } from "./bank-payments.js";
 import {
   approveBandoOrder,
   approveCoinTradePayout,
@@ -174,6 +175,14 @@ export function createApp(options = {}) {
     });
 
     if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+    return res.json(result);
+  }));
+
+  app.post("/api/bando/payments/bank-webhook", asyncHandler(async (req, res) => {
+    const authError = validateBankWebhookAuth(req);
+    if (authError) return res.status(401).json({ ok: false, error: authError });
+
+    const result = await handleBankPaymentPayload(req.body);
     return res.json(result);
   }));
 

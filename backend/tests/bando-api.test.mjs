@@ -691,3 +691,110 @@ test("Bando API tách tồn kho theo game khi trùng tên server", async () => {
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("Bando API khop thanh toan tu webhook ngan hang", async () => {
+  process.env.BANDO_BANK_WEBHOOK_TOKEN = "unit-bank-webhook-token";
+  const { server, baseUrl } = await listen(createApp({ serveFrontend: false }));
+  try {
+    const priceResponse = await fetch(`${baseUrl}/api/bando/prices`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code: "webhook-payment-item",
+        itemId: 900005,
+        name: "Webhook payment item",
+        buyName: "webhookitem",
+        aliases: ["webhookitem"],
+        unit: "cai",
+        sellPrice: 15000,
+        stock: 100,
+        active: true,
+      }),
+    });
+    assert.equal(priceResponse.status, 200);
+
+    const configResponse = await fetch(`${baseUrl}/api/bando/bot/config`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        serverName: "Webhook Server",
+        characterName: "WebhookBot",
+        serverProfiles: [
+          {
+            serverName: "Webhook Server",
+            characterName: "WebhookBot",
+            enabled: true,
+          },
+        ],
+      }),
+    });
+    assert.equal(configResponse.status, 200);
+
+    const inventoryResponse = await fetch(`${baseUrl}/api/bando/bot/inventory`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "WebhookBot",
+        serverName: "Webhook Server",
+        inventory: [{ itemId: 900005, name: "Webhook payment item", quantity: 100 }],
+      }),
+    });
+    assert.equal(inventoryResponse.status, 200);
+
+    const orderResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "KhachWebhook",
+        serverName: "Webhook Server",
+        privateMessage: "webhookitem 2",
+      }),
+    });
+    assert.equal(orderResponse.status, 201);
+    const orderPayload = await orderResponse.json();
+
+    const webhookResponse = await fetch(`${baseUrl}/api/bando/payments/bank-webhook`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-bando-bank-token": "unit-bank-webhook-token",
+      },
+      body: JSON.stringify({
+        data: [
+          {
+            transactionID: "MBB-UNIT-1",
+            amount: orderPayload.order.totalAmount,
+            description: `Thanh toan don ${orderPayload.order.paymentCode}`,
+            type: "IN",
+          },
+        ],
+      }),
+    });
+    assert.equal(webhookResponse.status, 200);
+    const webhookPayload = await webhookResponse.json();
+    assert.equal(webhookPayload.ok, true);
+    assert.equal(webhookPayload.matched, 1);
+    assert.equal(webhookPayload.results[0].paymentCode, orderPayload.order.paymentCode);
+    assert.equal(webhookPayload.results[0].deliveryJob.characterName, "KhachWebhook");
+
+    const duplicateResponse = await fetch(`${baseUrl}/api/bando/payments/bank-webhook`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-bando-bank-token": "unit-bank-webhook-token",
+      },
+      body: JSON.stringify({
+        transactionID: "MBB-UNIT-1-DUP",
+        amount: `${orderPayload.order.totalAmount} VND`,
+        content: `CK ${orderPayload.order.paymentCode}`,
+        transactionType: "credit",
+      }),
+    });
+    assert.equal(duplicateResponse.status, 200);
+    const duplicatePayload = await duplicateResponse.json();
+    assert.equal(duplicatePayload.results[0].status, "already_paid");
+  } finally {
+    delete process.env.BANDO_BANK_WEBHOOK_TOKEN;
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

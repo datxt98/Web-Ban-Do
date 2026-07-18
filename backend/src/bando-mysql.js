@@ -123,7 +123,14 @@ export async function confirmPaymentMysql(paymentCode, amount, note) {
 
     const order = mapOrder(rows[0]);
     if (order.status === "completed") {
+      if (order.totalAmount === amount) {
+        return { ok: true, order, alreadyCompleted: true };
+      }
       return { ok: false, error: "Đơn này đã hoàn tất." };
+    }
+
+    if (order.status === "paid" && order.totalAmount === amount) {
+      return { ok: true, order, alreadyPaid: true };
     }
 
     if (order.totalAmount !== amount) {

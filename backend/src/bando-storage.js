@@ -563,6 +563,7 @@ export async function confirmBandoPayment(args) {
   const mysqlResult = await confirmPaymentMysql(paymentCode, amount, note);
   if (mysqlResult) {
     if (!mysqlResult.ok) return mysqlResult;
+    if (mysqlResult.alreadyCompleted) return mysqlResult;
     return {
       ...mysqlResult,
       deliveryJob: toDeliveryJob(mysqlResult.order),
@@ -1039,7 +1040,14 @@ function confirmPaymentMemory(paymentCode, amount, note) {
   }
 
   if (order.status === "completed") {
+    if (order.totalAmount === amount) {
+      return { ok: true, order: { ...order }, alreadyCompleted: true };
+    }
     return { ok: false, error: "Đơn này đã hoàn tất." };
+  }
+
+  if (order.status === "paid" && order.totalAmount === amount) {
+    return { ok: true, order: { ...order }, deliveryJob: toDeliveryJob(order), alreadyPaid: true };
   }
 
   if (order.totalAmount !== amount) {
