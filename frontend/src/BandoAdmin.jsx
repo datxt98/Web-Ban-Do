@@ -1219,12 +1219,12 @@ export default function BandoAdmin() {
                         serverName: activeServerName,
                       }),
                     });
-                    return `Đã đồng bộ ${result.imported} item từ DB server.`;
+                    return `Đã đồng bộ ${result.imported} item từ DB của ${activeGameName} / ${activeServerName}.`;
                   })
                 }
               >
                 <RefreshCcw size={17} />
-                Đồng bộ DB
+                Đồng bộ DB server
               </button>
             </div>
 
@@ -1249,7 +1249,7 @@ export default function BandoAdmin() {
                   <small>{item.active && item.sellPrice > 0 ? "Đang bán" : "chưa bán"}</small>
                 </button>
               ))}
-              {searchResults.length === 0 && <div className="emptyBlock">Không tìm thấy item trong DB bando.</div>}
+              {searchResults.length === 0 && <div className="emptyBlock">Không tìm thấy item của game/server đang chọn trong DB bando.</div>}
             </div>
           </div>
 

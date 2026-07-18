@@ -6,14 +6,17 @@ const MYSQL_DISABLED_MS = 10_000;
 const EVENT_PRUNE_INTERVAL_MS = 60_000;
 const NOISY_EVENT_TYPES = new Set(["inventory_synced"]);
 const DEFAULT_GAME_NAME = "Ninja Mobile";
+const NINJA_2D_GAME_NAME = "Ninja 2D";
 let mysqlDisabledUntil = 0;
 let lastEventPruneAt = 0;
+const itemSyncCache = new Map();
 
 export async function listBandoStateMysql(args = {}) {
   return withBandoConnection(async (conn) => {
     const gameName = normalizeGameName(args.gameName);
     const serverName = String(args.serverName || "").trim();
     const characterName = String(args.characterName || "").trim();
+    const itemSync = serverName ? await syncItemsFromConfiguredServer(conn, gameName, serverName, { force: args.forceItemSync }) : null;
     const itemRows = await listItemsForServer(conn, gameName, serverName);
     const [orderRows] = await conn.query(
       `SELECT * FROM bando_orders
@@ -41,6 +44,7 @@ export async function listBandoStateMysql(args = {}) {
       events: eventRows.map(mapEvent),
       bankAccounts: bankAccountRows.map(mapBankAccount),
       gameServers: gameServerRows.map(mapGameServer),
+      itemSync,
       storage: "mysql",
     };
   });
@@ -668,61 +672,20 @@ export async function importServerItemsMysql(args = {}) {
   return withBandoConnection(async (conn, config) => {
     const gameName = normalizeGameName(args.gameName);
     const serverName = normalizeServerName(args.serverName);
-    const gameServer = serverName ? await findGameServerForImport(conn, gameName, serverName) : null;
+    if (serverName) {
+      return syncItemsFromConfiguredServer(conn, gameName, serverName, { force: true, failWhenMissing: true });
+    }
+
     let rows = [];
     let sourceDatabase = "";
-
-    if (gameServer) {
-      const sourceResult = await readItemsFromGameServer(gameServer);
-      if (!sourceResult.ok) return sourceResult;
-      rows = sourceResult.rows;
-      sourceDatabase = sourceResult.sourceDatabase;
-    } else if (serverName) {
-      return {
-        ok: false,
-        error: `Chua cau hinh DB cho game '${gameName}' / server '${serverName}'. Hay them server trong tab Server DB truoc khi dong bo item.`,
-      };
-    } else {
+    {
       const serverDb = safeIdentifier(config.serverDatabase);
       [rows] = await conn.query(`SELECT id, name FROM \`${serverDb}\`.\`item\` ORDER BY id ASC`);
       sourceDatabase = serverDb;
     }
-
-    const now = new Date().toISOString();
-    let imported = 0;
-    for (const row of rows) {
-      const itemId = Number(row.id);
-      const name = String(row.name ?? "").trim();
-      if (!Number.isInteger(itemId) || itemId < 0 || !name) continue;
-
-      await conn.execute(
-        `INSERT INTO bando_items (
-          code, game_name, server_name, item_id, name, buy_name, aliases, unit, sell_price, stock, active, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-          item_id = VALUES(item_id),
-          name = VALUES(name),
-          updated_at = VALUES(updated_at)`,
-        [
-          createScopedItemCode(gameName, serverName || "default", itemId),
-          gameName,
-          serverName || "default",
-          itemId,
-          name,
-          `vp${itemId}`,
-          JSON.stringify([`vp${itemId}`, `item-${itemId}`]),
-          "cái",
-          0,
-          0,
-          0,
-          now,
-        ],
-      );
-      imported++;
-    }
-
-    await insertEvent(conn, null, "server_items_imported", `Đồng bộ ${imported} vật phẩm từ DB server.`);
-    return { ok: true, imported, gameName, serverName: serverName || "default", sourceDatabase };
+    const result = await upsertImportedItems(conn, { gameName, serverName: serverName || "default", rows, sourceDatabase });
+    await insertEvent(conn, null, "server_items_imported", `Đồng bộ ${result.imported} vật phẩm từ DB server.`);
+    return result;
   });
 }
 
@@ -1029,6 +992,7 @@ async function ensureBandoMysqlSchema(conn) {
   await ensureColumn(conn, "bando_bank_accounts", "payment_prefix", "VARCHAR(32) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_bank_accounts", "callback_signature", "VARCHAR(255) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "game_servers", "game_name", "VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile'");
+  await migrateLegacyGameServerGameNames(conn);
   await ensureColumn(conn, "game_servers", "socket_port_web", "VARCHAR(255) NULL");
   await ensureColumn(conn, "game_servers", "socket_key_web", "VARCHAR(255) NULL");
   await ensureColumn(conn, "game_servers", "day_open", "VARCHAR(40) NULL");
@@ -1118,6 +1082,23 @@ async function dropIndexIfExists(conn, table, indexName) {
   await conn.execute(`ALTER TABLE \`${safeIdentifier(table)}\` DROP INDEX \`${safeIdentifier(indexName)}\``);
 }
 
+async function migrateLegacyGameServerGameNames(conn) {
+  await conn.execute(
+    `UPDATE game_servers
+     SET game_name = ?
+     WHERE LOWER(COALESCE(db_user, '')) LIKE '%2d%'
+        OR LOWER(COALESCE(db_game_database, '')) LIKE '%2d%'
+        OR LOWER(COALESCE(db_player_database, '')) LIKE '%2d%'`,
+    [NINJA_2D_GAME_NAME],
+  );
+  await conn.execute(
+    `UPDATE game_servers
+     SET game_name = ?
+     WHERE game_name IS NULL OR TRIM(game_name) = ''`,
+    [DEFAULT_GAME_NAME],
+  );
+}
+
 async function insertEvent(conn, orderCode, type, message) {
   if (NOISY_EVENT_TYPES.has(type)) {
     await pruneEvents(conn);
@@ -1199,15 +1180,7 @@ async function listItemsForServer(conn, gameName, serverName) {
        ORDER BY active DESC, name ASC`,
       [normalizedGameName, normalizedServerName],
     );
-    if (specificRows.length > 0) return specificRows;
-
-    const [legacyRows] = await conn.query(
-      `SELECT * FROM bando_items
-       WHERE game_name = ? AND server_name IN ('', 'default')
-       ORDER BY active DESC, name ASC`,
-      [normalizedGameName],
-    );
-    return legacyRows;
+    return specificRows;
   }
 
   const [rows] = await conn.query(
@@ -1217,6 +1190,88 @@ async function listItemsForServer(conn, gameName, serverName) {
     [normalizedGameName],
   );
   return rows;
+}
+
+async function syncItemsFromConfiguredServer(conn, gameName, serverName, options = {}) {
+  const normalizedGameName = normalizeGameName(gameName);
+  const normalizedServerName = normalizeServerName(serverName);
+  if (!normalizedServerName) {
+    return { ok: true, skipped: true, reason: "missing-server", gameName: normalizedGameName, serverName: "" };
+  }
+
+  const intervalMs = readIntegerEnv("BANDO_SERVER_ITEM_SYNC_MS", 0, 0, 3_600_000);
+  const cacheKey = `${normalizedGameName.toLowerCase()}::${normalizedServerName.toLowerCase()}`;
+  const cachedAt = itemSyncCache.get(cacheKey) || 0;
+  if (!options.force && intervalMs > 0 && Date.now() - cachedAt < intervalMs) {
+    return { ok: true, skipped: true, reason: "cached", gameName: normalizedGameName, serverName: normalizedServerName };
+  }
+
+  const gameServer = await findGameServerForImport(conn, normalizedGameName, normalizedServerName);
+  if (!gameServer) {
+    const result = {
+      ok: false,
+      skipped: true,
+      reason: "missing-config",
+      error: `Chưa cấu hình DB cho game '${normalizedGameName}' / server '${normalizedServerName}'. Hãy thêm server trong tab Server DB.`,
+      gameName: normalizedGameName,
+      serverName: normalizedServerName,
+    };
+    return options.failWhenMissing ? result : { ...result, ok: true };
+  }
+
+  const sourceResult = await readItemsFromGameServer(gameServer);
+  if (!sourceResult.ok) {
+    return options.failWhenMissing ? sourceResult : { ...sourceResult, skipped: true };
+  }
+
+  const result = await upsertImportedItems(conn, {
+    gameName: normalizedGameName,
+    serverName: normalizedServerName,
+    rows: sourceResult.rows,
+    sourceDatabase: sourceResult.sourceDatabase,
+  });
+  itemSyncCache.set(cacheKey, Date.now());
+  return result;
+}
+
+async function upsertImportedItems(conn, { gameName, serverName, rows, sourceDatabase }) {
+  const normalizedGameName = normalizeGameName(gameName);
+  const normalizedServerName = normalizeServerName(serverName) || "default";
+  const now = new Date().toISOString();
+  let imported = 0;
+
+  for (const row of rows) {
+    const itemId = Number(row.id);
+    const name = String(row.name ?? "").trim();
+    if (!Number.isInteger(itemId) || itemId < 0 || !name) continue;
+
+    await conn.execute(
+      `INSERT INTO bando_items (
+        code, game_name, server_name, item_id, name, buy_name, aliases, unit, sell_price, stock, active, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        item_id = VALUES(item_id),
+        name = VALUES(name),
+        updated_at = VALUES(updated_at)`,
+      [
+        createScopedItemCode(normalizedGameName, normalizedServerName, itemId),
+        normalizedGameName,
+        normalizedServerName,
+        itemId,
+        name,
+        `vp${itemId}`,
+        JSON.stringify([`vp${itemId}`, `item-${itemId}`]),
+        "cái",
+        0,
+        0,
+        0,
+        now,
+      ],
+    );
+    imported++;
+  }
+
+  return { ok: true, imported, gameName: normalizedGameName, serverName: normalizedServerName, sourceDatabase };
 }
 
 async function findGameServerForImport(conn, gameName, serverName) {
@@ -1229,16 +1284,7 @@ async function findGameServerForImport(conn, gameName, serverName) {
     [serverName, normalizeGameName(gameName)],
   );
   if (rows.length > 0) return mapGameServer(rows[0]);
-
-  const [fallbackRows] = await conn.query(
-    `SELECT *
-     FROM game_servers
-     WHERE name = ?
-     ORDER BY is_default DESC, display_order ASC, id ASC
-     LIMIT 1`,
-    [serverName],
-  );
-  return fallbackRows[0] ? mapGameServer(fallbackRows[0]) : null;
+  return null;
 }
 
 async function readItemsFromGameServer(gameServer) {
