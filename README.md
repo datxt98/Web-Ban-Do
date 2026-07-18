@@ -19,16 +19,16 @@ npm start
 The app listens on:
 
 ```text
-http://0.0.0.0:5001
+http://0.0.0.0:1122
 ```
 
 Bank callback URL:
 
 ```text
-http://YOUR_PUBLIC_IP:5001/api/bando/payments/bank-webhook
+http://YOUR_PUBLIC_IP:1122/api/bando/payments/bank-webhook
 ```
 
-For production with a domain and HTTPS, put Nginx/Caddy/IIS in front of port `5001` and use:
+For production with a domain and HTTPS, put Nginx/Caddy/IIS in front of port `1122` and use:
 
 ```text
 https://YOUR_DOMAIN/api/bando/payments/bank-webhook
