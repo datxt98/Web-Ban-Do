@@ -4,7 +4,8 @@
     "private":  true,
     "type":  "module",
     "scripts":  {
-                    "start":  "node backend/src/index.js"
+                    "start":  "node backend/src/index.js",
+                    "db:import-game-servers":  "node scripts/import-game-servers-from-sql.mjs"
                 },
     "dependencies":  {
                          "cors":  "^2.8.5",
