@@ -164,7 +164,7 @@ function coinTradeStatusLabel(status, type) {
   if (status === "paid") return "Chờ BOT giao xu";
   if (status === "awaiting_trade") return "Chờ khách giao xu";
   if (status === "awaiting_payout_info") return "Chờ khách gửi STK";
-  if (status === "completed") return type === "sell_xu" ? "Ch? duy?t tr? ti?n" : "Ho?n t?t";
+  if (status === "completed") return type === "sell_xu" ? "Chờ duyệt trả tiền" : "Hoàn tất";
   if (status === "payout_completed") return "Đã trả tiền";
   if (status === "payout_info_cancelled") return "Đã hủy STK";
   return status || "-";
@@ -382,6 +382,8 @@ export default function BandoAdmin() {
   const [authMode, setAuthMode] = useState("login");
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [newAdminUsername, setNewAdminUsername] = useState("");
+  const [newAdminPassword, setNewAdminPassword] = useState("");
   const [botConfig, setBotConfig] = useState(emptyBotConfig);
   const [configDraft, setConfigDraft] = useState(emptyBotConfig);
   const [activeGameName, setActiveGameName] = useState(() => {
@@ -552,11 +554,11 @@ export default function BandoAdmin() {
       setAuthHasUsers(true);
       setAuthPassword("");
       await loadState(activeGameRef.current || activeGameName, activeServerRef.current || activeServerName);
-      setMessage({ tone: "ok", text: authMode === "register" ? "?? t?o t?i kho?n qu?n tr?." : "?? ??ng nh?p." });
+      setMessage({ tone: "ok", text: authMode === "register" ? "Đã tạo tài khoản quản trị." : "Đã đăng nhập." });
     } catch (error) {
       setMessage({
         tone: "error",
-        text: error instanceof Error ? error.message : "Kh?ng ??ng nh?p ???c.",
+        text: error instanceof Error ? error.message : "Không đăng nhập được.",
       });
     } finally {
       setBusy(false);
@@ -581,7 +583,7 @@ export default function BandoAdmin() {
     } catch (error) {
       setMessage({
         tone: "error",
-        text: error instanceof Error ? error.message : "C? l?i kh?ng x?c ??nh.",
+        text: error instanceof Error ? error.message : "Có lỗi không xác định.",
       });
     } finally {
       setBusy(false);
@@ -695,6 +697,18 @@ export default function BandoAdmin() {
     };
   }
 
+  function resetNewAdminDrafts() {
+    setNewAdminUsername("");
+    setNewAdminPassword("");
+  }
+
+  function newAdminBody() {
+    return {
+      username: newAdminUsername.trim(),
+      password: newAdminPassword,
+    };
+  }
+
   function openAddItem(item) {
     setActiveView("add");
     if (item) {
@@ -736,7 +750,7 @@ export default function BandoAdmin() {
     void loadState(selectedGameName, selectedServerName).catch((error) => {
       setMessage({
         tone: "error",
-        text: error instanceof Error ? error.message : "Kh?ng t?i ???c d? li?u b?n ??.",
+        text: error instanceof Error ? error.message : "Không tải được dữ liệu bán đồ.",
       });
     });
   }
@@ -748,7 +762,7 @@ export default function BandoAdmin() {
     void loadState(activeGameName, selectedServerName).catch((error) => {
       setMessage({
         tone: "error",
-        text: error instanceof Error ? error.message : "Kh?ng t?i ???c d? li?u b?n ??.",
+        text: error instanceof Error ? error.message : "Không tải được dữ liệu bán đồ.",
       });
     });
   }
@@ -890,7 +904,7 @@ export default function BandoAdmin() {
             <LockKeyhole size={28} />
             <div>
               <span className="kicker">Bảo mật web bán đồ</span>
-              <h1>{authMode === "register" ? "T?o t?i kho?n qu?n tr?" : "??ng nh?p qu?n tr?"}</h1>
+              <h1>{authMode === "register" ? "Tạo tài khoản quản trị" : "Đăng nhập quản trị"}</h1>
             </div>
           </div>
           <form className="authForm" onSubmit={submitAuth}>
@@ -909,17 +923,18 @@ export default function BandoAdmin() {
             </label>
             <button className="primaryButton wide" disabled={busy} type="submit">
               {authMode === "register" ? <UserPlus size={17} /> : <LogIn size={17} />}
-              {authMode === "register" ? "T?o t?i kho?n" : "??ng nh?p"}
+              {authMode === "register" ? "Tạo tài khoản" : "Đăng nhập"}
             </button>
           </form>
-          {!authHasUsers && (
-            <button
-              className="toolButton wide"
-              type="button"
-              onClick={() => setAuthMode(authMode === "register" ? "login" : "register")}
-            >
-              {authMode === "register" ? "T?i ?? c? t?i kho?n" : "T?o t?i kho?n ??u ti?n"}
-            </button>
+          <button
+            className="toolButton wide"
+            type="button"
+            onClick={() => setAuthMode(authMode === "register" ? "login" : "register")}
+          >
+            {authMode === "register" ? "Tôi đã có tài khoản" : "Tạo tài khoản"}
+          </button>
+          {authHasUsers && authMode === "register" && (
+            <p className="hintText">Nếu web đã có tài khoản quản trị, hãy đăng nhập trước để tạo thêm tài khoản.</p>
           )}
           {message && <div className={`notice ${message.tone}`}>{message.text}</div>}
         </section>
@@ -1007,6 +1022,10 @@ export default function BandoAdmin() {
           <ListChecks size={17} />
           Đơn hàng
         </button>
+        <button className={activeView === "admin" ? "tab active" : "tab"} onClick={() => setActiveView("admin")}>
+          <UserPlus size={17} />
+          Admin
+        </button>
       </nav>
 
       <section className="statsRow">
@@ -1033,6 +1052,57 @@ export default function BandoAdmin() {
       </section>
 
       {message && <div className={`notice ${message.tone}`}>{message.text}</div>}
+
+      {activeView === "admin" && (
+        <section className="panel">
+          <div className="panelHeader">
+            <div>
+              <span className="kicker">Bảo mật</span>
+              <h2>Tài khoản quản trị</h2>
+            </div>
+            <button className="toolButton" onClick={resetNewAdminDrafts}>
+              <UserPlus size={17} />
+              Tạo mới
+            </button>
+          </div>
+
+          <div className="formGrid two">
+            <label>
+              <span>Tên đăng nhập mới</span>
+              <input value={newAdminUsername} onChange={(event) => setNewAdminUsername(event.target.value)} autoComplete="off" />
+            </label>
+            <label>
+              <span>Mật khẩu mới</span>
+              <input
+                type="password"
+                value={newAdminPassword}
+                onChange={(event) => setNewAdminPassword(event.target.value)}
+                autoComplete="new-password"
+              />
+            </label>
+            <div className="spanAll bankActions">
+              <button
+                className="primaryButton"
+                disabled={busy}
+                onClick={() =>
+                  void runAction(async () => {
+                    await jsonFetch("/api/bando/auth/register", {
+                      method: "POST",
+                      body: JSON.stringify(newAdminBody()),
+                    });
+                    resetNewAdminDrafts();
+                    return "Đã tạo tài khoản quản trị mới.";
+                  })
+                }
+              >
+                <UserPlus size={17} />
+                Tạo tài khoản
+              </button>
+              <p className="hintText inline">Tên đăng nhập và mật khẩu tối thiểu 4 ký tự.</p>
+            </div>
+          </div>
+        </section>
+      )}
 
       {activeView === "shop" && (
         <section className="panel">
@@ -1165,7 +1235,7 @@ export default function BandoAdmin() {
                 >
                   <span>{item.itemId ?? "-"}</span>
                   <strong>{item.name}</strong>
-                  <small>{item.active && item.sellPrice > 0 ? "?ang b?n" : "ch?a b?n"}</small>
+                  <small>{item.active && item.sellPrice > 0 ? "Đang bán" : "chưa bán"}</small>
                 </button>
               ))}
               {searchResults.length === 0 && <div className="emptyBlock">Không tìm thấy item trong DB bando.</div>}
@@ -1569,7 +1639,7 @@ export default function BandoAdmin() {
                 }
               >
                 <Save size={17} />
-                {selectedGameServer ? "L?u server DB" : "Th?m server DB"}
+                {selectedGameServer ? "Lưu server DB" : "Thêm server DB"}
               </button>
               {selectedGameServer && (
                 <button className="toolButton" onClick={resetGameServerDrafts}>
@@ -1800,7 +1870,7 @@ export default function BandoAdmin() {
                 }
               >
                 <Save size={17} />
-                {selectedBankAccount ? "L?u thay ??i" : "Th?m t?i kho?n"}
+                {selectedBankAccount ? "Lưu thay đổi" : "Thêm tài khoản"}
               </button>
               {selectedBankAccount && (
                 <button className="toolButton" onClick={resetBankDrafts}>
@@ -1963,7 +2033,7 @@ export default function BandoAdmin() {
                           }
                         >
                           <CheckCircle2 size={15} />
-                          {trade.bankName && trade.accountNumber && trade.accountName ? "Duy?t tr? ti?n" : "Thi?u STK"}
+                          {trade.bankName && trade.accountNumber && trade.accountName ? "Duyệt trả tiền" : "Thiếu STK"}
                         </button>
                       )}
                     </td>

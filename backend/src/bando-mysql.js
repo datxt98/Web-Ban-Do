@@ -590,7 +590,7 @@ export async function insertBandoAdminUserMysql(user) {
       return { ok: true, user: rows[0] ? mapAdminUser(rows[0]) : null, storage: "mysql" };
     } catch (error) {
       if (error?.code === "ER_DUP_ENTRY") {
-        return { ok: false, error: "Ten dang nhap da ton tai." };
+        return { ok: false, error: "Tên đăng nhập đã tồn tại." };
       }
       throw error;
     }
