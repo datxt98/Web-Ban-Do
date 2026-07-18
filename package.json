@@ -13,6 +13,7 @@
     "dev:backend": "npm --workspace backend run dev",
     "build": "npm --workspace frontend run build",
     "start": "npm --workspace backend run start",
+    "db:import-game-servers": "node scripts/import-game-servers-from-sql.mjs",
     "test": "npm --workspace backend run test && npm --workspace frontend run build",
     "lint": "npm test"
   },

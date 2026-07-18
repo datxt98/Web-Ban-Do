@@ -15,7 +15,6 @@ import {
   RefreshCcw,
   Save,
   Search,
-  ServerCog,
   Store,
   ToggleLeft,
   Trash2,
@@ -40,28 +39,6 @@ const emptyState = {
   gameServers: [],
   events: [],
   storage: "memory",
-};
-
-const emptyGameServerDraft = {
-  id: null,
-  gameName: defaultGameName,
-  name: "",
-  code: "",
-  status: "online",
-  dbHost: "127.0.0.1",
-  dbPort: 3306,
-  dbUser: "root",
-  dbPassword: "",
-  dbGameDatabase: "",
-  dbPlayerDatabase: "",
-  socketHost: "",
-  socketPort: 5900,
-  socketKey: "",
-  socketPortWeb: "",
-  socketKeyWeb: "",
-  isDefault: false,
-  displayOrder: 0,
-  dayOpen: "",
 };
 
 const emptyBotConfig = {
@@ -393,8 +370,6 @@ export default function BandoAdmin() {
   const [authMode, setAuthMode] = useState("login");
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
-  const [newAdminUsername, setNewAdminUsername] = useState("");
-  const [newAdminPassword, setNewAdminPassword] = useState("");
   const [botConfig, setBotConfig] = useState(emptyBotConfig);
   const [configDraft, setConfigDraft] = useState(emptyBotConfig);
   const [activeGameName, setActiveGameName] = useState(() => {
@@ -432,8 +407,6 @@ export default function BandoAdmin() {
   const [paymentPrefixDraft, setPaymentPrefixDraft] = useState("");
   const [callbackSignatureDraft, setCallbackSignatureDraft] = useState("");
   const [bankActiveDraft, setBankActiveDraft] = useState(true);
-  const [selectedGameServer, setSelectedGameServer] = useState(null);
-  const [gameServerDraft, setGameServerDraft] = useState(emptyGameServerDraft);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
 
@@ -647,55 +620,6 @@ export default function BandoAdmin() {
     setBankActiveDraft(true);
   }
 
-  function selectGameServer(server) {
-    setSelectedGameServer(server);
-    setGameServerDraft({
-      ...emptyGameServerDraft,
-      ...server,
-      gameName: normalizeGameName(server.gameName),
-      name: server.name || "",
-      code: server.code || "",
-      dbPassword: server.dbPassword || "",
-    });
-  }
-
-  function resetGameServerDrafts() {
-    setSelectedGameServer(null);
-    setGameServerDraft({
-      ...emptyGameServerDraft,
-      gameName: activeGameName,
-      name: activeServerName || "",
-      code: activeServerName || "",
-    });
-  }
-
-  function updateGameServerDraft(partial) {
-    setGameServerDraft((current) => ({ ...current, ...partial }));
-  }
-
-  function gameServerBody() {
-    return {
-      ...gameServerDraft,
-      gameName: normalizeGameName(gameServerDraft.gameName),
-      name: gameServerDraft.name.trim(),
-      code: gameServerDraft.code.trim(),
-      dbHost: gameServerDraft.dbHost.trim(),
-      dbPort: numberValue(gameServerDraft.dbPort, 3306),
-      dbUser: gameServerDraft.dbUser.trim(),
-      dbPassword: gameServerDraft.dbPassword.trim(),
-      dbGameDatabase: gameServerDraft.dbGameDatabase.trim(),
-      dbPlayerDatabase: gameServerDraft.dbPlayerDatabase.trim(),
-      socketHost: gameServerDraft.socketHost.trim(),
-      socketPort: numberValue(gameServerDraft.socketPort, 5900),
-      socketKey: gameServerDraft.socketKey.trim(),
-      socketPortWeb: String(gameServerDraft.socketPortWeb || "").trim(),
-      socketKeyWeb: gameServerDraft.socketKeyWeb.trim(),
-      displayOrder: numberValue(gameServerDraft.displayOrder, 0),
-      isDefault: Boolean(gameServerDraft.isDefault),
-      dayOpen: String(gameServerDraft.dayOpen || "").trim(),
-    };
-  }
-
   function bankAccountBody() {
     return {
       bankName: bankNameDraft.trim(),
@@ -705,18 +629,6 @@ export default function BandoAdmin() {
       paymentPrefix: paymentPrefixDraft.trim(),
       callbackSignature: callbackSignatureDraft.trim(),
       active: bankActiveDraft,
-    };
-  }
-
-  function resetNewAdminDrafts() {
-    setNewAdminUsername("");
-    setNewAdminPassword("");
-  }
-
-  function newAdminBody() {
-    return {
-      username: newAdminUsername.trim(),
-      password: newAdminPassword,
     };
   }
 
@@ -1013,10 +925,6 @@ export default function BandoAdmin() {
           <Bot size={17} />
           Cấu hình BOT
         </button>
-        <button className={activeView === "servers" ? "tab active" : "tab"} onClick={() => setActiveView("servers")}>
-          <ServerCog size={17} />
-          Server DB
-        </button>
         <button className={activeView === "bank" ? "tab active" : "tab"} onClick={() => setActiveView("bank")}>
           <CreditCard size={17} />
           Tài khoản
@@ -1032,10 +940,6 @@ export default function BandoAdmin() {
         <button className={activeView === "orders" ? "tab active" : "tab"} onClick={() => setActiveView("orders")}>
           <ListChecks size={17} />
           Đơn hàng
-        </button>
-        <button className={activeView === "admin" ? "tab active" : "tab"} onClick={() => setActiveView("admin")}>
-          <UserPlus size={17} />
-          Admin
         </button>
       </nav>
 
@@ -1063,57 +967,6 @@ export default function BandoAdmin() {
       </section>
 
       {message && <div className={`notice ${message.tone}`}>{message.text}</div>}
-
-      {activeView === "admin" && (
-        <section className="panel">
-          <div className="panelHeader">
-            <div>
-              <span className="kicker">Bảo mật</span>
-              <h2>Tài khoản quản trị</h2>
-            </div>
-            <button className="toolButton" onClick={resetNewAdminDrafts}>
-              <UserPlus size={17} />
-              Tạo mới
-            </button>
-          </div>
-
-          <div className="formGrid two">
-            <label>
-              <span>Tên đăng nhập mới</span>
-              <input value={newAdminUsername} onChange={(event) => setNewAdminUsername(event.target.value)} autoComplete="off" />
-            </label>
-            <label>
-              <span>Mật khẩu mới</span>
-              <input
-                type="password"
-                value={newAdminPassword}
-                onChange={(event) => setNewAdminPassword(event.target.value)}
-                autoComplete="new-password"
-              />
-            </label>
-            <div className="spanAll bankActions">
-              <button
-                className="primaryButton"
-                disabled={busy}
-                onClick={() =>
-                  void runAction(async () => {
-                    await jsonFetch("/api/bando/auth/register", {
-                      method: "POST",
-                      body: JSON.stringify(newAdminBody()),
-                    });
-                    resetNewAdminDrafts();
-                    return "Đã tạo tài khoản quản trị mới.";
-                  })
-                }
-              >
-                <UserPlus size={17} />
-                Tạo tài khoản
-              </button>
-              <p className="hintText inline">Tên đăng nhập và mật khẩu tối thiểu 4 ký tự.</p>
-            </div>
-          </div>
-        </section>
-      )}
 
       {activeView === "shop" && (
         <section className="panel">
@@ -1530,207 +1383,6 @@ export default function BandoAdmin() {
                 </div>
               </div>
             </div>
-          </div>
-        </section>
-      )}
-
-      {activeView === "servers" && (
-        <section className="panel">
-          <div className="panelHeader">
-            <div>
-              <span className="kicker">Cấu hình dữ liệu game</span>
-              <h2>Server DB</h2>
-            </div>
-            <button className="toolButton" onClick={resetGameServerDrafts}>
-              <ServerCog size={17} />
-              Thêm server DB
-            </button>
-          </div>
-
-          <div className="formGrid four serverDbForm">
-            <label>
-              <span>Game</span>
-              <select value={gameServerDraft.gameName} onChange={(event) => updateGameServerDraft({ gameName: event.target.value })}>
-                {gameOptions.map((gameName) => (
-                  <option key={gameName} value={gameName}>
-                    {gameName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Tên server trong game</span>
-              <input value={gameServerDraft.name} onChange={(event) => updateGameServerDraft({ name: event.target.value })} placeholder="VD: S1-Ronin" />
-            </label>
-            <label>
-              <span>Mã server</span>
-              <input value={gameServerDraft.code} onChange={(event) => updateGameServerDraft({ code: event.target.value })} placeholder="VD: server1" />
-            </label>
-            <label>
-              <span>Trạng thái</span>
-              <select value={gameServerDraft.status} onChange={(event) => updateGameServerDraft({ status: event.target.value })}>
-                <option value="online">online</option>
-                <option value="offline">offline</option>
-                <option value="maintenance">maintenance</option>
-                <option value="new">new</option>
-              </select>
-            </label>
-            <label>
-              <span>DB host</span>
-              <input value={gameServerDraft.dbHost} onChange={(event) => updateGameServerDraft({ dbHost: event.target.value })} />
-            </label>
-            <label>
-              <span>DB port</span>
-              <input value={gameServerDraft.dbPort} onChange={(event) => updateGameServerDraft({ dbPort: event.target.value })} inputMode="numeric" />
-            </label>
-            <label>
-              <span>DB user</span>
-              <input value={gameServerDraft.dbUser} onChange={(event) => updateGameServerDraft({ dbUser: event.target.value })} />
-            </label>
-            <label>
-              <span>DB password</span>
-              <input type="password" value={gameServerDraft.dbPassword} onChange={(event) => updateGameServerDraft({ dbPassword: event.target.value })} />
-            </label>
-            <label>
-              <span>DB game</span>
-              <input value={gameServerDraft.dbGameDatabase} onChange={(event) => updateGameServerDraft({ dbGameDatabase: event.target.value })} placeholder="VD: ninja_game_server1" />
-            </label>
-            <label>
-              <span>DB player</span>
-              <input value={gameServerDraft.dbPlayerDatabase} onChange={(event) => updateGameServerDraft({ dbPlayerDatabase: event.target.value })} placeholder="VD: ninja_player_server1" />
-            </label>
-            <label>
-              <span>Socket host</span>
-              <input value={gameServerDraft.socketHost} onChange={(event) => updateGameServerDraft({ socketHost: event.target.value })} />
-            </label>
-            <label>
-              <span>Socket port</span>
-              <input value={gameServerDraft.socketPort} onChange={(event) => updateGameServerDraft({ socketPort: event.target.value })} inputMode="numeric" />
-            </label>
-            <label>
-              <span>Socket key</span>
-              <input type="password" value={gameServerDraft.socketKey} onChange={(event) => updateGameServerDraft({ socketKey: event.target.value })} />
-            </label>
-            <label>
-              <span>Socket port web</span>
-              <input value={gameServerDraft.socketPortWeb} onChange={(event) => updateGameServerDraft({ socketPortWeb: event.target.value })} />
-            </label>
-            <label>
-              <span>Socket key web</span>
-              <input type="password" value={gameServerDraft.socketKeyWeb} onChange={(event) => updateGameServerDraft({ socketKeyWeb: event.target.value })} />
-            </label>
-            <label>
-              <span>Thứ tự</span>
-              <input value={gameServerDraft.displayOrder} onChange={(event) => updateGameServerDraft({ displayOrder: event.target.value })} inputMode="numeric" />
-            </label>
-            <label>
-              <span>Ngày mở</span>
-              <input value={gameServerDraft.dayOpen} onChange={(event) => updateGameServerDraft({ dayOpen: event.target.value })} placeholder="YYYY-MM-DD HH:mm:ss" />
-            </label>
-            <label className="checkLine serverDefault">
-              <input type="checkbox" checked={gameServerDraft.isDefault} onChange={(event) => updateGameServerDraft({ isDefault: event.target.checked })} />
-              Server mặc định của game này
-            </label>
-            <div className="spanAll bankActions">
-              <button
-                className="primaryButton"
-                disabled={busy}
-                onClick={() =>
-                  void runAction(async () => {
-                    const url = selectedGameServer
-                      ? `/api/bando/game-servers/${selectedGameServer.id}`
-                      : "/api/bando/game-servers";
-                    await jsonFetch(url, {
-                      method: selectedGameServer ? "PATCH" : "POST",
-                      body: JSON.stringify(gameServerBody()),
-                    });
-                    rememberActiveSelection(gameServerDraft.gameName, gameServerDraft.name);
-                    return "Đã lưu cấu hình DB server.";
-                  })
-                }
-              >
-                <Save size={17} />
-                {selectedGameServer ? "Lưu server DB" : "Thêm server DB"}
-              </button>
-              {selectedGameServer && (
-                <button className="toolButton" onClick={resetGameServerDrafts}>
-                  Bỏ chọn
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="dataTableWrap">
-            <table className="dataTable">
-              <thead>
-                <tr>
-                  <th>Game</th>
-                  <th>Tên server</th>
-                  <th>Mã</th>
-                  <th>DB game</th>
-                  <th>DB player</th>
-                  <th>Trạng thái</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {(state.gameServers ?? []).map((server) => (
-                  <tr key={server.id}>
-                    <td>{server.gameName}</td>
-                    <td>{server.name}</td>
-                    <td className="monoCell">{server.code}</td>
-                    <td className="monoCell">{server.dbGameDatabase}</td>
-                    <td className="monoCell">{server.dbPlayerDatabase}</td>
-                    <td>
-                      <span className={server.status === "online" ? "status paid" : "status cancelled"}>
-                        {server.status}{server.isDefault ? " / default" : ""}
-                      </span>
-                    </td>
-                    <td className="rowActions">
-                      <button className="miniButton" onClick={() => selectGameServer(server)}>
-                        <Edit3 size={15} />
-                        Sửa
-                      </button>
-                      <button
-                        className="miniButton"
-                        onClick={() => {
-                          rememberActiveSelection(server.gameName, server.name);
-                          setConfigDraft(configForServer(botConfig, server.gameName, server.name));
-                          void loadState(server.gameName, server.name);
-                        }}
-                      >
-                        <Store size={15} />
-                        Chọn
-                      </button>
-                      <button
-                        className="miniButton muted"
-                        disabled={busy}
-                        onClick={() =>
-                          void runAction(async () => {
-                            await jsonFetch(`/api/bando/game-servers/${server.id}`, {
-                              method: "DELETE",
-                              body: JSON.stringify({}),
-                            });
-                            if (selectedGameServer?.id === server.id) resetGameServerDrafts();
-                            return `Đã xóa server ${server.name}.`;
-                          })
-                        }
-                      >
-                        <Trash2 size={15} />
-                        Xóa
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {(state.gameServers ?? []).length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="emptyCell">
-                      Chưa có server DB. Thêm server sao cho tên server trùng với tên BOT đang gửi lên web.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
           </div>
         </section>
       )}

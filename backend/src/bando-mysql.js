@@ -43,7 +43,7 @@ export async function listBandoStateMysql(args = {}) {
       transactions: transactionRows.map(mapTransaction),
       events: eventRows.map(mapEvent),
       bankAccounts: bankAccountRows.map(mapBankAccount),
-      gameServers: gameServerRows.map(mapGameServer),
+      gameServers: gameServerRows.map(mapPublicGameServer),
       itemSync,
       storage: "mysql",
     };
@@ -1212,7 +1212,7 @@ async function syncItemsFromConfiguredServer(conn, gameName, serverName, options
       ok: false,
       skipped: true,
       reason: "missing-config",
-      error: `Chưa cấu hình DB cho game '${normalizedGameName}' / server '${normalizedServerName}'. Hãy thêm server trong tab Server DB.`,
+      error: `Chưa cấu hình DB cho game '${normalizedGameName}' / server '${normalizedServerName}'. Hãy import file game_servers.sql vào bảng game_servers của DB bando.`,
       gameName: normalizedGameName,
       serverName: normalizedServerName,
     };
@@ -1369,6 +1369,22 @@ function mapGameServer(row) {
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
     dayOpen: row.day_open == null ? "" : String(row.day_open),
+  };
+}
+
+function mapPublicGameServer(row) {
+  const server = mapGameServer(row);
+  return {
+    id: server.id,
+    gameName: server.gameName,
+    name: server.name,
+    code: server.code,
+    status: server.status,
+    isDefault: server.isDefault,
+    displayOrder: server.displayOrder,
+    createdAt: server.createdAt,
+    updatedAt: server.updatedAt,
+    dayOpen: server.dayOpen,
   };
 }
 

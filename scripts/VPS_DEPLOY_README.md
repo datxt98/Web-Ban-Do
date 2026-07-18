@@ -22,6 +22,16 @@ The app listens on:
 http://0.0.0.0:1122
 ```
 
+## Import Game Servers
+
+To import a `game_servers.sql` dump into the `bando.game_servers` table:
+
+```bash
+npm run db:import-game-servers -- /path/to/game_servers.sql
+```
+
+The SQL file is not included in Git or in this deploy package because it contains DB passwords and socket keys.
+
 Bank callback URL:
 
 ```text

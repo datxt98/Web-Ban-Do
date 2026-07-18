@@ -20,9 +20,11 @@ if (Test-Path $stage) {
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $stage "backend") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $stage "frontend") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $stage "scripts") | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $root "backend\src") -Destination (Join-Path $stage "backend\src") -Recurse
 Copy-Item -LiteralPath (Join-Path $root "frontend\dist") -Destination (Join-Path $stage "frontend\dist") -Recurse
+Copy-Item -LiteralPath (Join-Path $root "scripts\import-game-servers-from-sql.mjs") -Destination (Join-Path $stage "scripts\import-game-servers-from-sql.mjs")
 Copy-Item -LiteralPath (Join-Path $root "backend\.env.example") -Destination (Join-Path $stage ".env.example")
 Copy-Item -LiteralPath (Join-Path $root "scripts\VPS_DEPLOY_README.md") -Destination (Join-Path $stage "README.md")
 
@@ -34,6 +36,7 @@ $deployPackage = [ordered]@{
   type = "module"
   scripts = [ordered]@{
     start = "node backend/src/index.js"
+    "db:import-game-servers" = "node scripts/import-game-servers-from-sql.mjs"
   }
   dependencies = $backendPackage.dependencies
 }
