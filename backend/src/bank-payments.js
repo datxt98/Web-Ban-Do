@@ -1,7 +1,19 @@
 import { confirmBandoPayment } from "./bando-storage.js";
 
 const PAYMENT_CODE_PATTERN = /\bBD[A-Z0-9]{4,10}\b/i;
-const ARRAY_KEYS = ["data", "transactions", "transactionHistory", "history", "items", "rows", "records", "result"];
+const ARRAY_KEYS = [
+  "TranList",
+  "tranList",
+  "transactionList",
+  "data",
+  "transactions",
+  "transactionHistory",
+  "history",
+  "items",
+  "rows",
+  "records",
+  "result",
+];
 const AMOUNT_KEYS = [
   "amount",
   "money",
@@ -36,6 +48,7 @@ const ID_KEYS = [
   "transactionID",
   "transactionId",
   "transaction_id",
+  "tranId",
   "transId",
   "refNo",
   "reference",

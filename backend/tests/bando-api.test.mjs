@@ -760,12 +760,23 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
         "x-bando-bank-token": "unit-bank-webhook-token",
       },
       body: JSON.stringify({
-        data: [
+        status: "success",
+        message: "Thanh cong",
+        TranList: [
           {
-            transactionID: "MBB-UNIT-1",
-            amount: orderPayload.order.totalAmount,
-            description: `Thanh toan don ${orderPayload.order.paymentCode}`,
-            type: "IN",
+            refNo: "FT26160751856109",
+            tranId: "FT26160751856109",
+            postingDate: "09/06/2026 23:59:59",
+            transactionDate: "09/06/2026 20:48:17",
+            accountNo: "990919072000",
+            creditAmount: String(orderPayload.order.totalAmount),
+            debitAmount: "0",
+            currency: "VND",
+            description: `PHAN TIEN DUC QR ${orderPayload.order.paymentCode}- Ma GD ACSP/ nf407 079`,
+            addDescription: `QR ${orderPayload.order.paymentCode}- Ma GD ACSP/ nf407 079`,
+            availableBalance: "31246205",
+            beneficiaryAccount: "",
+            transactionType: "BI2B",
           },
         ],
       }),
