@@ -60,9 +60,15 @@ const ID_KEYS = [
 ];
 const TYPE_KEYS = ["type", "transactionType", "txnType", "direction", "creditDebitIndicator", "cd", "sign"];
 
-export function validateBankWebhookAuth(req) {
+export function validateBankWebhookAuth(req, options = {}) {
   const expected = String(process.env.BANDO_BANK_WEBHOOK_TOKEN || "").trim();
-  if (!expected) return null;
+  const bankSignatures = Array.isArray(options.bankAccounts)
+    ? options.bankAccounts
+        .map((account) => String(account.callbackSignature || "").trim())
+        .filter(Boolean)
+    : [];
+
+  if (!expected && bankSignatures.length === 0) return null;
 
   const auth = String(req.headers.authorization || "");
   const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
@@ -74,12 +80,16 @@ export function validateBankWebhookAuth(req) {
       bearer ||
       "",
   ).trim();
+  const signature = String(req.headers.signature || "").trim();
 
-  return supplied === expected ? null : "Webhook ngan hang khong hop le.";
+  if (expected && supplied === expected) return null;
+  if (signature && bankSignatures.includes(signature)) return null;
+
+  return "Webhook ngan hang khong hop le.";
 }
 
-export async function handleBankPaymentPayload(payload) {
-  const transactions = normalizeBankTransactions(payload);
+export async function handleBankPaymentPayload(payload, options = {}) {
+  const transactions = normalizeBankTransactions(payload, options);
   const seen = new Set();
   const results = [];
   let matched = 0;
@@ -141,19 +151,19 @@ export async function handleBankPaymentPayload(payload) {
   };
 }
 
-export function normalizeBankTransactions(payload) {
+export function normalizeBankTransactions(payload, options = {}) {
   const candidates = collectTransactionCandidates(payload);
-  return candidates.map(normalizeBankTransaction).filter(Boolean);
+  return candidates.map((entry) => normalizeBankTransaction(entry, options)).filter(Boolean);
 }
 
-function normalizeBankTransaction(entry) {
+function normalizeBankTransaction(entry, options = {}) {
   if (!isPlainObject(entry)) return null;
 
   const amount = parseVndAmount(pickFirst(entry, AMOUNT_KEYS));
   const description = buildDescriptionText(entry);
   const type = String(pickFirst(entry, TYPE_KEYS) ?? "").trim();
   const transactionId = String(pickFirst(entry, ID_KEYS) ?? "").trim();
-  const paymentCode = extractPaymentCode(entry, description);
+  const paymentCode = extractPaymentCode(entry, description, options.bankAccounts);
 
   return {
     transactionId,
@@ -185,13 +195,41 @@ function collectTransactionCandidates(payload, depth = 0) {
   return nested.length > 0 ? nested : [payload];
 }
 
-function extractPaymentCode(entry, description) {
+function extractPaymentCode(entry, description, bankAccounts = []) {
   const direct = String(pickFirst(entry, ["paymentCode", "orderCode", "code"]) ?? "").trim();
+  const prefixedDirect = extractPrefixedPaymentCode(direct, bankAccounts);
+  if (prefixedDirect) return prefixedDirect;
+
   const directMatch = direct.match(PAYMENT_CODE_PATTERN);
   if (directMatch) return directMatch[0].toUpperCase();
 
+  const prefixedDescription = extractPrefixedPaymentCode(description, bankAccounts);
+  if (prefixedDescription) return prefixedDescription;
+
   const descriptionMatch = String(description || "").match(PAYMENT_CODE_PATTERN);
   return descriptionMatch ? descriptionMatch[0].toUpperCase() : "";
+}
+
+function extractPrefixedPaymentCode(text, bankAccounts = []) {
+  const source = String(text || "");
+  if (!source) return "";
+
+  for (const account of bankAccounts) {
+    const prefix = normalizePaymentPrefix(account?.paymentPrefix);
+    if (!prefix) continue;
+
+    const index = source.toUpperCase().indexOf(prefix);
+    if (index < 0) continue;
+
+    const rest = source.slice(index + prefix.length).trim();
+    const match = rest.match(/([A-Za-z0-9]{3,16})/);
+    if (match) return `${prefix}${match[1]}`.toUpperCase();
+
+    const directMatch = source.slice(index).match(new RegExp(`${escapeRegExp(prefix)}[A-Za-z0-9]{3,16}`, "i"));
+    if (directMatch) return directMatch[0].toUpperCase();
+  }
+
+  return "";
 }
 
 function buildDescriptionText(entry) {
@@ -288,6 +326,17 @@ function normalizeType(type) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
+}
+
+function normalizePaymentPrefix(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toUpperCase();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isPlainObject(value) {

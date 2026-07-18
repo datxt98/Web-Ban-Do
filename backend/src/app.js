@@ -179,10 +179,11 @@ export function createApp(options = {}) {
   }));
 
   app.post("/api/bando/payments/bank-webhook", asyncHandler(async (req, res) => {
-    const authError = validateBankWebhookAuth(req);
+    const state = await listBandoState();
+    const authError = validateBankWebhookAuth(req, { bankAccounts: state.bankAccounts });
     if (authError) return res.status(401).json({ ok: false, error: authError });
 
-    const result = await handleBankPaymentPayload(req.body);
+    const result = await handleBankPaymentPayload(req.body, { bankAccounts: state.bankAccounts });
     return res.json(result);
   }));
 

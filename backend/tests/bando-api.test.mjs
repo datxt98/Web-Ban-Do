@@ -693,7 +693,6 @@ test("Bando API tách tồn kho theo game khi trùng tên server", async () => {
 });
 
 test("Bando API khop thanh toan tu webhook ngan hang", async () => {
-  process.env.BANDO_BANK_WEBHOOK_TOKEN = "unit-bank-webhook-token";
   const { server, baseUrl } = await listen(createApp({ serveFrontend: false }));
   try {
     const priceResponse = await fetch(`${baseUrl}/api/bando/prices`, {
@@ -730,6 +729,21 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
     });
     assert.equal(configResponse.status, 200);
 
+    const bankResponse = await fetch(`${baseUrl}/api/bando/bank-accounts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bankName: "MB BANK",
+        bankCode: "MB",
+        accountNumber: "0354340126",
+        accountName: "SHOP BANDO",
+        paymentPrefix: "MBN",
+        callbackSignature: "unit-bank-signature",
+        active: true,
+      }),
+    });
+    assert.equal(bankResponse.status, 200);
+
     const inventoryResponse = await fetch(`${baseUrl}/api/bando/bot/inventory`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -752,12 +766,13 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
     });
     assert.equal(orderResponse.status, 201);
     const orderPayload = await orderResponse.json();
+    assert.match(orderPayload.order.paymentCode, /^MBN[A-Z0-9]{6}$/);
 
     const webhookResponse = await fetch(`${baseUrl}/api/bando/payments/bank-webhook`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-bando-bank-token": "unit-bank-webhook-token",
+        signature: "unit-bank-signature",
       },
       body: JSON.stringify({
         status: "success",
@@ -792,7 +807,7 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-bando-bank-token": "unit-bank-webhook-token",
+        signature: "unit-bank-signature",
       },
       body: JSON.stringify({
         transactionID: "MBB-UNIT-1-DUP",
@@ -805,7 +820,6 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
     const duplicatePayload = await duplicateResponse.json();
     assert.equal(duplicatePayload.results[0].status, "already_paid");
   } finally {
-    delete process.env.BANDO_BANK_WEBHOOK_TOKEN;
     await new Promise((resolve) => server.close(resolve));
   }
 });

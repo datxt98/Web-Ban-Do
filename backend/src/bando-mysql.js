@@ -490,8 +490,11 @@ export async function upsertBandoBankAccountMysql(args) {
   return withBandoConnection(async (conn) => {
     const id = Number(args.id);
     const bankName = String(args.bankName || "").trim();
+    const bankCode = String(args.bankCode || "").trim().toUpperCase();
     const accountNumber = String(args.accountNumber || "").trim();
     const accountName = String(args.accountName || "").trim();
+    const paymentPrefix = normalizePaymentPrefix(args.paymentPrefix);
+    const callbackSignature = String(args.callbackSignature || "").trim();
     const active = args.active !== false;
     const now = new Date().toISOString();
 
@@ -506,15 +509,17 @@ export async function upsertBandoBankAccountMysql(args) {
     if (Number.isInteger(id) && id > 0) {
       await conn.execute(
         `UPDATE bando_bank_accounts
-         SET bank_name = ?, account_number = ?, account_name = ?, active = ?, updated_at = ?
+         SET bank_name = ?, bank_code = ?, account_number = ?, account_name = ?, payment_prefix = ?, callback_signature = ?, active = ?, updated_at = ?
          WHERE id = ?`,
-        [bankName, accountNumber, accountName, active ? 1 : 0, now, id],
+        [bankName, bankCode, accountNumber, accountName, paymentPrefix, callbackSignature, active ? 1 : 0, now, id],
       );
     } else {
       const [result] = await conn.execute(
-        `INSERT INTO bando_bank_accounts (bank_name, account_number, account_name, active, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [bankName, accountNumber, accountName, active ? 1 : 0, now, now],
+        `INSERT INTO bando_bank_accounts (
+          bank_name, bank_code, account_number, account_name, payment_prefix,
+          callback_signature, active, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [bankName, bankCode, accountNumber, accountName, paymentPrefix, callbackSignature, active ? 1 : 0, now, now],
       );
       args.id = result.insertId;
     }
@@ -764,8 +769,11 @@ async function ensureBandoMysqlSchema(conn) {
     `CREATE TABLE IF NOT EXISTS bando_bank_accounts (
       id INT AUTO_INCREMENT PRIMARY KEY,
       bank_name VARCHAR(96) NOT NULL,
+      bank_code VARCHAR(32) NOT NULL DEFAULT '',
       account_number VARCHAR(64) NOT NULL,
       account_name VARCHAR(128) NOT NULL,
+      payment_prefix VARCHAR(32) NOT NULL DEFAULT '',
+      callback_signature VARCHAR(255) NOT NULL DEFAULT '',
       active TINYINT NOT NULL DEFAULT 1,
       created_at VARCHAR(40) NOT NULL,
       updated_at VARCHAR(40) NOT NULL,
@@ -818,6 +826,9 @@ async function ensureBandoMysqlSchema(conn) {
   await ensureColumn(conn, "bando_coin_trades", "account_number", "VARCHAR(64) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_coin_trades", "account_name", "VARCHAR(128) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_coin_trades", "payout_notified_at", "VARCHAR(40) NULL");
+  await ensureColumn(conn, "bando_bank_accounts", "bank_code", "VARCHAR(32) NOT NULL DEFAULT ''");
+  await ensureColumn(conn, "bando_bank_accounts", "payment_prefix", "VARCHAR(32) NOT NULL DEFAULT ''");
+  await ensureColumn(conn, "bando_bank_accounts", "callback_signature", "VARCHAR(255) NOT NULL DEFAULT ''");
   await dropIndexIfExists(conn, "bando_inventory", "bando_inventory_source_item_uq");
   await ensureIndex(conn, "bando_orders", "bando_orders_game_server_idx", "game_name, server_name");
   await ensureIndex(conn, "bando_inventory", "bando_inventory_game_server_idx", "game_name, server_name");
@@ -1127,8 +1138,11 @@ function mapBankAccount(row) {
   return {
     id: toNumber(row.id, 0),
     bankName: String(row.bank_name ?? ""),
+    bankCode: String(row.bank_code ?? ""),
     accountNumber: String(row.account_number ?? ""),
     accountName: String(row.account_name ?? ""),
+    paymentPrefix: String(row.payment_prefix ?? ""),
+    callbackSignature: String(row.callback_signature ?? ""),
     active: Boolean(toNumber(row.active, 0)),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
@@ -1168,6 +1182,13 @@ function readIntegerEnv(name, fallback, min, max) {
 
 function normalizeGameName(value) {
   return String(value || DEFAULT_GAME_NAME).trim() || DEFAULT_GAME_NAME;
+}
+
+function normalizePaymentPrefix(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toUpperCase();
 }
 
 function formatIndexColumns(value) {

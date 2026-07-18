@@ -1,4 +1,5 @@
 import { handleBankPaymentPayload } from "./bank-payments.js";
+import { listBandoState } from "./bando-storage.js";
 
 export function startBankPaymentSync() {
   if (!isEnabled(process.env.BANDO_BANK_SYNC_ENABLED)) return null;
@@ -17,7 +18,8 @@ export function startBankPaymentSync() {
     running = true;
     try {
       const payload = await fetchBankPayload(apiUrl);
-      const result = await handleBankPaymentPayload(payload);
+      const state = await listBandoState();
+      const result = await handleBankPaymentPayload(payload, { bankAccounts: state.bankAccounts });
       if (result.matched || result.rejected) {
         console.log(
           `[bando:bank] sync: received=${result.received} matched=${result.matched} rejected=${result.rejected} ignored=${result.ignored}`,

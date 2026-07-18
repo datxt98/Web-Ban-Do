@@ -291,11 +291,12 @@ export async function createBandoOrderFromChat(args) {
 
   const bankAccount = selectPaymentBankAccount(state.bankAccounts);
   const orderCode = createOrderCode(state.orders);
+  const paymentCode = createPaymentCode(state.orders, bankAccount, orderCode);
   const totalAmount = parsed.quantity * item.sellPrice;
   const now = new Date().toISOString();
   const order = {
     orderCode,
-    paymentCode: orderCode,
+    paymentCode,
     characterName,
     gameName,
     serverName,
@@ -320,7 +321,7 @@ export async function createBandoOrderFromChat(args) {
         itemName: item.name,
         quantity: parsed.quantity,
         totalAmount,
-        paymentCode: orderCode,
+        paymentCode,
         bankAccount,
       }),
     };
@@ -337,10 +338,10 @@ export async function createBandoOrderFromChat(args) {
       characterName,
       itemName: item.name,
       quantity: parsed.quantity,
-    totalAmount,
-    paymentCode: orderCode,
-    bankAccount,
-  }),
+      totalAmount,
+      paymentCode,
+      bankAccount,
+    }),
   };
 }
 
@@ -359,11 +360,12 @@ async function createCoinBuyOrderFromChat(args) {
 
   const bankAccount = selectPaymentBankAccount(args.state.bankAccounts);
   const orderCode = createOrderCode(args.state.orders);
+  const paymentCode = createPaymentCode(args.state.orders, bankAccount, orderCode);
   const totalAmount = calculateCustomerPayVnd(args.coinAmount, sellConfig.rate);
   const now = new Date().toISOString();
   const order = {
     orderCode,
-    paymentCode: orderCode,
+    paymentCode,
     characterName: args.characterName,
     gameName: args.gameName,
     serverName: args.serverName,
@@ -380,7 +382,7 @@ async function createCoinBuyOrderFromChat(args) {
   };
   const coinTrade = {
     orderCode,
-    paymentCode: orderCode,
+    paymentCode,
     characterName: args.characterName,
     gameName: args.gameName,
     serverName: args.serverName,
@@ -408,7 +410,7 @@ async function createCoinBuyOrderFromChat(args) {
         characterName: args.characterName,
         coinAmount: args.coinAmount,
         totalAmount,
-        paymentCode: orderCode,
+        paymentCode,
         bankAccount,
       }),
     };
@@ -428,7 +430,7 @@ async function createCoinBuyOrderFromChat(args) {
       characterName: args.characterName,
       coinAmount: args.coinAmount,
       totalAmount,
-      paymentCode: orderCode,
+      paymentCode,
       bankAccount,
     }),
   };
@@ -779,8 +781,11 @@ export async function upsertBandoBankAccount(args) {
   const nextAccount = {
     id: memoryBankAccountId++,
     bankName: bankAccount.bankName,
+    bankCode: bankAccount.bankCode,
     accountNumber: bankAccount.accountNumber,
     accountName: bankAccount.accountName,
+    paymentPrefix: bankAccount.paymentPrefix,
+    callbackSignature: bankAccount.callbackSignature,
     active: bankAccount.active,
     createdAt: now,
     updatedAt: now,
@@ -1295,8 +1300,11 @@ function normalizeInventory(inventory) {
 function normalizeBankAccount(args) {
   const id = Number(args.id);
   const bankName = String(args.bankName || "").trim();
+  const bankCode = String(args.bankCode || "").trim().toUpperCase();
   const accountNumber = String(args.accountNumber || "").trim();
   const accountName = String(args.accountName || "").trim();
+  const paymentPrefix = normalizePaymentPrefix(args.paymentPrefix);
+  const callbackSignature = String(args.callbackSignature || "").trim();
 
   if (!bankName || !accountNumber || !accountName) {
     return { ok: false, error: "Thiếu ngân hàng, số tài khoản hoặc chủ tài khoản." };
@@ -1306,8 +1314,11 @@ function normalizeBankAccount(args) {
     ok: true,
     id: Number.isInteger(id) && id > 0 ? id : null,
     bankName,
+    bankCode,
     accountNumber,
     accountName,
+    paymentPrefix,
+    callbackSignature,
     active: args.active !== false,
   };
 }
@@ -1327,6 +1338,33 @@ function createOrderCode(existingOrders = []) {
   }
 
   return `BD${Math.floor(Math.random() * 1679616).toString(36).toUpperCase().padStart(4, "0")}`;
+}
+
+function createPaymentCode(existingOrders = [], bankAccount, fallbackCode) {
+  const prefix = normalizePaymentPrefix(bankAccount?.paymentPrefix);
+  if (!prefix) return fallbackCode;
+
+  const used = new Set(
+    existingOrders.flatMap((order) => [
+      String(order.orderCode || "").toUpperCase(),
+      String(order.paymentCode || "").toUpperCase(),
+    ]),
+  );
+
+  for (let i = 0; i < 30; i++) {
+    const randomPart = Math.floor(Math.random() * 2176782336).toString(36).toUpperCase().padStart(6, "0");
+    const code = `${prefix}${randomPart}`;
+    if (!used.has(code)) return code;
+  }
+
+  return `${prefix}${Math.floor(Math.random() * 2176782336).toString(36).toUpperCase().padStart(6, "0")}`;
+}
+
+function normalizePaymentPrefix(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toUpperCase();
 }
 
 function createDefaultBotConfig() {

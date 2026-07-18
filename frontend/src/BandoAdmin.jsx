@@ -293,6 +293,13 @@ function formatXu(amount) {
   return `${numberFormatter.format(Math.max(0, Math.round(Number(amount) || 0)))} xu`;
 }
 
+function maskSecret(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= 6) return "*".repeat(text.length);
+  return `${text.slice(0, 3)}***${text.slice(-3)}`;
+}
+
 function coinAmountForRate(rate) {
   return numberValue(rate, 2.6) * 100000;
 }
@@ -330,8 +337,11 @@ export default function BandoAdmin() {
   const [activeDraft, setActiveDraft] = useState(true);
   const [selectedBankAccount, setSelectedBankAccount] = useState(null);
   const [bankNameDraft, setBankNameDraft] = useState("");
+  const [bankCodeDraft, setBankCodeDraft] = useState("");
   const [accountNumberDraft, setAccountNumberDraft] = useState("");
   const [accountNameDraft, setAccountNameDraft] = useState("");
+  const [paymentPrefixDraft, setPaymentPrefixDraft] = useState("");
+  const [callbackSignatureDraft, setCallbackSignatureDraft] = useState("");
   const [bankActiveDraft, setBankActiveDraft] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
@@ -464,24 +474,33 @@ export default function BandoAdmin() {
   function selectBankAccount(account) {
     setSelectedBankAccount(account);
     setBankNameDraft(account.bankName);
+    setBankCodeDraft(account.bankCode || "");
     setAccountNumberDraft(account.accountNumber);
     setAccountNameDraft(account.accountName);
+    setPaymentPrefixDraft(account.paymentPrefix || "");
+    setCallbackSignatureDraft(account.callbackSignature || "");
     setBankActiveDraft(account.active);
   }
 
   function resetBankDrafts() {
     setSelectedBankAccount(null);
     setBankNameDraft("");
+    setBankCodeDraft("");
     setAccountNumberDraft("");
     setAccountNameDraft("");
+    setPaymentPrefixDraft("");
+    setCallbackSignatureDraft("");
     setBankActiveDraft(true);
   }
 
   function bankAccountBody() {
     return {
       bankName: bankNameDraft.trim(),
+      bankCode: bankCodeDraft.trim(),
       accountNumber: accountNumberDraft.trim(),
       accountName: accountNameDraft.trim(),
+      paymentPrefix: paymentPrefixDraft.trim(),
+      callbackSignature: callbackSignatureDraft.trim(),
       active: bankActiveDraft,
     };
   }
@@ -782,6 +801,9 @@ export default function BandoAdmin() {
                   <th>Tên mua</th>
                   <th>Đơn giá</th>
                   <th>Số lượng trong hành trang/rương</th>
+                  <th>Ma QR</th>
+                  <th>Prefix</th>
+                  <th>Signature</th>
                   <th></th>
                 </tr>
               </thead>
@@ -795,6 +817,9 @@ export default function BandoAdmin() {
                     <td>
                       {item.stock} {item.unit}
                     </td>
+                    <td className="monoCell">{account.bankCode || "-"}</td>
+                    <td className="monoCell">{account.paymentPrefix || "-"}</td>
+                    <td className="monoCell">{maskSecret(account.callbackSignature) || "-"}</td>
                     <td className="rowActions">
                       <button className="miniButton" onClick={() => openAddItem(item)}>
                         <Edit3 size={15} />
@@ -1278,12 +1303,24 @@ export default function BandoAdmin() {
               <input value={bankNameDraft} onChange={(event) => setBankNameDraft(event.target.value)} placeholder="VD: Vietcombank" />
             </label>
             <label>
+              <span>Ma ngan hang QR</span>
+              <input value={bankCodeDraft} onChange={(event) => setBankCodeDraft(event.target.value)} placeholder="VD: MB" />
+            </label>
+            <label>
               <span>Số tài khoản</span>
               <input value={accountNumberDraft} onChange={(event) => setAccountNumberDraft(event.target.value)} placeholder="VD: 0123456789" />
             </label>
             <label>
               <span>Chủ tài khoản</span>
               <input value={accountNameDraft} onChange={(event) => setAccountNameDraft(event.target.value)} placeholder="VD: NGUYEN VAN A" />
+            </label>
+            <label>
+              <span>Prefix noi dung</span>
+              <input value={paymentPrefixDraft} onChange={(event) => setPaymentPrefixDraft(event.target.value)} placeholder="VD: MBN" />
+            </label>
+            <label>
+              <span>Signature callback</span>
+              <input value={callbackSignatureDraft} onChange={(event) => setCallbackSignatureDraft(event.target.value)} placeholder="Dan signature tu cong bank" />
             </label>
             <label className="checkLine bankActive">
               <input type="checkbox" checked={bankActiveDraft} onChange={(event) => setBankActiveDraft(event.target.checked)} />
