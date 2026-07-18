@@ -109,13 +109,15 @@ export async function registerBandoAdmin(args = {}, headers = {}) {
   const username = normalizeUsername(args.username);
   const password = String(args.password || "");
   if (!username || password.length < 4) {
-    return { ok: false, error: "Ten dang nhap va mat khau toi thieu 4 ky tu." };
+    return { ok: false, error: "Tên đăng nhập và mật khẩu tối thiểu 4 ký tự." };
   }
 
   const hasUsers = await hasAdminUsers();
   if (hasUsers && process.env.BANDO_ALLOW_PUBLIC_REGISTER !== "1") {
     const auth = await validateBandoAdminAuth(headers);
-    if (!auth.ok) return auth;
+    if (!auth.ok) {
+      return { ok: false, error: "Đã có tài khoản quản trị. Hãy đăng nhập trước để tạo thêm tài khoản." };
+    }
   }
 
   const passwordRecord = createPasswordRecord(password);
@@ -132,7 +134,7 @@ export async function registerBandoAdmin(args = {}, headers = {}) {
   }
 
   if (memoryState.adminUsers.some((user) => user.username === username)) {
-    return { ok: false, error: "Ten dang nhap da ton tai." };
+    return { ok: false, error: "Tên đăng nhập đã tồn tại." };
   }
   const now = new Date().toISOString();
   const user = {
@@ -152,12 +154,12 @@ export async function registerBandoAdmin(args = {}, headers = {}) {
 export async function loginBandoAdmin(args = {}) {
   const username = normalizeUsername(args.username);
   const password = String(args.password || "");
-  if (!username || !password) return { ok: false, error: "Thieu ten dang nhap hoac mat khau." };
+  if (!username || !password) return { ok: false, error: "Thiếu tên đăng nhập hoặc mật khẩu." };
 
   const mysqlResult = await findBandoAdminUserByUsernameMysql(username);
   if (mysqlResult) {
     if (!mysqlResult.user || !verifyPassword(password, mysqlResult.user)) {
-      return { ok: false, error: "Sai ten dang nhap hoac mat khau." };
+      return { ok: false, error: "Sai tên đăng nhập hoặc mật khẩu." };
     }
     const token = createAuthToken(mysqlResult.user);
     return { ok: true, user: publicAdminUser(mysqlResult.user), token, storage: "mysql" };
@@ -165,7 +167,7 @@ export async function loginBandoAdmin(args = {}) {
 
   const user = memoryState.adminUsers.find((entry) => entry.username === username && entry.active);
   if (!user || !verifyPassword(password, user)) {
-    return { ok: false, error: "Sai ten dang nhap hoac mat khau." };
+    return { ok: false, error: "Sai tên đăng nhập hoặc mật khẩu." };
   }
   const token = createAuthToken(user);
   return { ok: true, user: publicAdminUser(user), token, storage: "memory" };
@@ -180,12 +182,12 @@ export async function validateBandoAdminAuth(headers = {}, options = {}) {
   const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
   const supplied = String(headers["x-bando-admin-token"] || bearer || "").trim();
   if (!supplied) {
-    return options.optional ? { ok: false, error: "" } : { ok: false, error: "Chua dang nhap quan tri." };
+    return options.optional ? { ok: false, error: "" } : { ok: false, error: "Chưa đăng nhập quản trị." };
   }
 
   const payload = verifyAuthToken(supplied);
   if (!payload) {
-    return options.optional ? { ok: false, error: "" } : { ok: false, error: "Phien dang nhap het han hoac khong hop le." };
+    return options.optional ? { ok: false, error: "" } : { ok: false, error: "Phiên đăng nhập hết hạn hoặc không hợp lệ." };
   }
 
   return {
