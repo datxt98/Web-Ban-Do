@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 process.env.BANDO_DISABLE_MYSQL = "1";
+process.env.BANDO_DISABLE_ADMIN_AUTH = "1";
 process.env.NODE_ENV = "test";
 
 const { createApp } = await import("../src/app.js");
@@ -639,13 +640,17 @@ test("Bando API tách tồn kho theo game khi trùng tên server", async () => {
     });
     assert.equal(configResponse.status, 200);
 
+    const mobileItemCode = "ninja-mobile-shared-server-item-900004";
+    const twoDItemCode = "ninja-2d-shared-server-item-900004";
     const priceResponse = await fetch(`${baseUrl}/api/bando/prices`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        code: "shared-game-item",
+        code: mobileItemCode,
+        gameName: "Ninja Mobile",
+        serverName: "Shared Server",
         itemId: 900004,
-        name: "Shared game item",
+        name: "Shared mobile item",
         buyName: "sharedgame",
         aliases: ["sharedgame"],
         unit: "cái",
@@ -655,6 +660,25 @@ test("Bando API tách tồn kho theo game khi trùng tên server", async () => {
       }),
     });
     assert.equal(priceResponse.status, 200);
+
+    const twoDPriceResponse = await fetch(`${baseUrl}/api/bando/prices`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code: twoDItemCode,
+        gameName: "Ninja 2D",
+        serverName: "Shared Server",
+        itemId: 900004,
+        name: "Shared 2D item",
+        buyName: "sharedgame",
+        aliases: ["sharedgame"],
+        unit: "cai",
+        sellPrice: 1000,
+        stock: 0,
+        active: true,
+      }),
+    });
+    assert.equal(twoDPriceResponse.status, 200);
 
     const mobileInventoryResponse = await fetch(`${baseUrl}/api/bando/bot/inventory`, {
       method: "POST",
@@ -682,11 +706,11 @@ test("Bando API tách tồn kho theo game khi trùng tên server", async () => {
 
     const mobileStateResponse = await fetch(`${baseUrl}/api/bando/history?gameName=${encodeURIComponent("Ninja Mobile")}&serverName=${encodeURIComponent("Shared Server")}`);
     const mobileState = await mobileStateResponse.json();
-    assert.equal(mobileState.items.find((item) => item.code === "shared-game-item").stock, 7);
+    assert.equal(mobileState.items.find((item) => item.code === mobileItemCode).stock, 7);
 
     const twoDStateResponse = await fetch(`${baseUrl}/api/bando/history?gameName=${encodeURIComponent("Ninja 2D")}&serverName=${encodeURIComponent("Shared Server")}`);
     const twoDState = await twoDStateResponse.json();
-    assert.equal(twoDState.items.find((item) => item.code === "shared-game-item").stock, 22);
+    assert.equal(twoDState.items.find((item) => item.code === twoDItemCode).stock, 22);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

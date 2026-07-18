@@ -45,6 +45,56 @@ button:disabled {
   padding: 20px;
 }
 
+.authShell {
+  align-content: center;
+  justify-content: center;
+}
+
+.authPanel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 16px;
+  max-width: 440px;
+  padding: 24px;
+  width: min(440px, calc(100vw - 32px));
+}
+
+.authTitle {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.authTitle h1,
+.authPanel h1 {
+  font-size: 1.25rem;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.authForm {
+  display: grid;
+  gap: 12px;
+}
+
+.authForm label {
+  display: grid;
+  gap: 6px;
+}
+
+.authForm label span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.authForm input {
+  border: 1px solid var(--line);
+  min-height: 42px;
+  outline: 0;
+  padding: 0 10px;
+}
+
 .topBar {
   align-items: center;
   background: var(--panel);
@@ -529,6 +579,10 @@ button:disabled {
   margin-top: 14px;
 }
 
+.serverDbForm {
+  margin-top: 14px;
+}
+
 .bankActions {
   align-items: center;
   display: flex;
@@ -536,6 +590,10 @@ button:disabled {
 }
 
 .bankActive {
+  min-height: 64px;
+}
+
+.serverDefault {
   min-height: 64px;
 }
 

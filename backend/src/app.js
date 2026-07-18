@@ -14,15 +14,22 @@ import {
   confirmBandoPayment,
   createBandoOrderFromChat,
   deleteBandoBankAccount,
+  deleteBandoGameServer,
+  getBandoAuthStatus,
   getBandoBotConfig,
   importBandoItemsFromServer,
+  listBandoGameServers,
   listPendingBandoDeliveries,
   listBandoState,
+  loginBandoAdmin,
+  registerBandoAdmin,
   resolveBandoBotConfig,
   upsertBandoBankAccount,
+  upsertBandoGameServer,
   updateBandoBotConfig,
   updateBandoInventory,
   updateBandoPrice,
+  validateBandoAdminAuth,
   validateBandoBotAuth,
 } from "./bando-storage.js";
 
@@ -46,28 +53,50 @@ export function createApp(options = {}) {
     res.json({ ok: true, service: "nso-bando-backend" });
   });
 
-  app.get("/api/bando/history", asyncHandler(async (_req, res) => {
+  app.get("/api/bando/auth/status", asyncHandler(async (req, res) => {
+    res.json(await getBandoAuthStatus(req.headers));
+  }));
+
+  app.post("/api/bando/auth/register", asyncHandler(async (req, res) => {
+    const result = await registerBandoAdmin(req.body, req.headers);
+    if (!result.ok) return res.status(400).json(result);
+    return res.status(201).json(result);
+  }));
+
+  app.post("/api/bando/auth/login", asyncHandler(async (req, res) => {
+    const result = await loginBandoAdmin(req.body);
+    if (!result.ok) return res.status(401).json(result);
+    return res.json(result);
+  }));
+
+  app.post("/api/bando/auth/logout", (_req, res) => {
+    res.json({ ok: true });
+  });
+
+  app.get("/api/bando/history", authorizeAdmin, asyncHandler(async (_req, res) => {
     res.json(await listBandoState({ gameName: _req.query.gameName, serverName: _req.query.serverName }));
   }));
 
-  app.get("/api/bando/bot/config", asyncHandler(async (_req, res) => {
+  app.get("/api/bando/bot/config", authorizeAdmin, asyncHandler(async (_req, res) => {
     res.json(await getBandoBotConfig());
   }));
 
-  app.patch("/api/bando/bot/config", asyncHandler(async (req, res) => {
+  app.patch("/api/bando/bot/config", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await updateBandoBotConfig(req.body);
     if (!result.ok) return res.status(400).json(result);
     return res.json(result);
   }));
 
-  app.get("/api/bando/prices", asyncHandler(async (_req, res) => {
+  app.get("/api/bando/prices", authorizeAdmin, asyncHandler(async (_req, res) => {
     const state = await listBandoState({ gameName: _req.query.gameName, serverName: _req.query.serverName });
     res.json({ items: state.items, storage: state.storage });
   }));
 
-  app.patch("/api/bando/prices", asyncHandler(async (req, res) => {
+  app.patch("/api/bando/prices", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await updateBandoPrice({
       code: req.body.code ?? "",
+      gameName: req.body.gameName,
+      serverName: req.body.serverName,
       itemId: req.body.itemId,
       name: req.body.name,
       buyName: req.body.buyName,
@@ -82,31 +111,56 @@ export function createApp(options = {}) {
     return res.json(result);
   }));
 
-  app.post("/api/bando/bank-accounts", asyncHandler(async (req, res) => {
+  app.post("/api/bando/bank-accounts", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await upsertBandoBankAccount(req.body);
     if (!result.ok) return res.status(400).json(result);
     return res.json(result);
   }));
 
-  app.patch("/api/bando/bank-accounts/:id", asyncHandler(async (req, res) => {
+  app.patch("/api/bando/bank-accounts/:id", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await upsertBandoBankAccount({ ...req.body, id: req.params.id });
     if (!result.ok) return res.status(400).json(result);
     return res.json(result);
   }));
 
-  app.delete("/api/bando/bank-accounts/:id", asyncHandler(async (req, res) => {
+  app.delete("/api/bando/bank-accounts/:id", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await deleteBandoBankAccount(req.params.id);
     if (!result.ok) return res.status(400).json(result);
     return res.json(result);
   }));
 
-  app.post("/api/bando/items/import-server", asyncHandler(async (_req, res) => {
-    const result = await importBandoItemsFromServer();
+  app.get("/api/bando/game-servers", authorizeAdmin, asyncHandler(async (_req, res) => {
+    res.json(await listBandoGameServers());
+  }));
+
+  app.post("/api/bando/game-servers", authorizeAdmin, asyncHandler(async (req, res) => {
+    const result = await upsertBandoGameServer(req.body);
+    if (!result.ok) return res.status(400).json(result);
+    return res.status(201).json(result);
+  }));
+
+  app.patch("/api/bando/game-servers/:id", authorizeAdmin, asyncHandler(async (req, res) => {
+    const result = await upsertBandoGameServer({ ...req.body, id: req.params.id });
+    if (!result.ok) return res.status(400).json(result);
+    return res.json(result);
+  }));
+
+  app.delete("/api/bando/game-servers/:id", authorizeAdmin, asyncHandler(async (req, res) => {
+    const result = await deleteBandoGameServer(req.params.id);
+    if (!result.ok) return res.status(400).json(result);
+    return res.json(result);
+  }));
+
+  app.post("/api/bando/items/import-server", authorizeAdmin, asyncHandler(async (req, res) => {
+    const result = await importBandoItemsFromServer({
+      gameName: req.body.gameName,
+      serverName: req.body.serverName,
+    });
     if (!result.ok) return res.status(400).json({ error: result.error });
     return res.json(result);
   }));
 
-  app.post("/api/bando/orders/:orderCode/approve", asyncHandler(async (req, res) => {
+  app.post("/api/bando/orders/:orderCode/approve", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await approveBandoOrder({
       orderCode: req.params.orderCode,
       note: req.body.note,
@@ -116,7 +170,7 @@ export function createApp(options = {}) {
     return res.json(result);
   }));
 
-  app.post("/api/bando/coin-trades/:orderCode/payout/approve", asyncHandler(async (req, res) => {
+  app.post("/api/bando/coin-trades/:orderCode/payout/approve", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await approveCoinTradePayout({
       orderCode: req.params.orderCode,
       note: req.body.note,
@@ -167,7 +221,7 @@ export function createApp(options = {}) {
     res.json(await listPendingBandoDeliveries({ gameName: req.query.gameName, serverName: req.query.serverName }));
   }));
 
-  app.post("/api/bando/payments/confirm", asyncHandler(async (req, res) => {
+  app.post("/api/bando/payments/confirm", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await confirmBandoPayment({
       paymentCode: req.body.paymentCode ?? "",
       amount: Number(req.body.amount),
@@ -229,6 +283,16 @@ function authorizeBot(req, res, next) {
   const error = validateBandoBotAuth(req.headers);
   if (error) return res.status(401).json({ error });
   return next();
+}
+
+function authorizeAdmin(req, res, next) {
+  Promise.resolve(validateBandoAdminAuth(req.headers))
+    .then((result) => {
+      if (!result.ok) return res.status(401).json({ ok: false, error: result.error });
+      req.bandoAdminUser = result.user;
+      return next();
+    })
+    .catch(next);
 }
 
 function asyncHandler(handler) {

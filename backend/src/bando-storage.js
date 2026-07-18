@@ -29,20 +29,27 @@ import {
   confirmBotNotificationMysql,
   confirmDeliveryMysql,
   confirmPaymentMysql,
+  countBandoAdminUsersMysql,
   deleteBandoBankAccountMysql,
+  deleteBandoGameServerMysql,
+  findBandoAdminUserByUsernameMysql,
   getBandoBotConfigMysql,
   importServerItemsMysql,
+  insertBandoAdminUserMysql,
   insertBandoCoinTradeMysql,
   insertBandoOrderMysql,
+  listBandoGameServersMysql,
   listPendingBotNotificationsMysql,
   listPendingDeliveriesMysql,
   listBandoStateMysql,
   updateCoinTradePayoutInfoMysql,
   upsertBandoBankAccountMysql,
+  upsertBandoGameServerMysql,
   updateBandoBotConfigMysql,
   updateBandoInventoryMysql,
   updateBandoItemMysql,
 } from "./bando-mysql.js";
+import { createAuthToken, createPasswordRecord, verifyAuthToken, verifyPassword } from "./bando-auth.js";
 
 const memoryState = {
   items: defaultBandoItems.map((item) => ({ ...item, aliases: [...item.aliases] })),
@@ -50,6 +57,8 @@ const memoryState = {
   coinTrades: [],
   transactions: [],
   bankAccounts: [],
+  gameServers: [],
+  adminUsers: [],
   events: [
     {
       id: 1,
@@ -71,6 +80,8 @@ let memoryOrderId = 1;
 let memoryCoinTradeId = 1;
 let memoryTransactionId = 1;
 let memoryBankAccountId = 1;
+let memoryGameServerId = 1;
+let memoryAdminUserId = 1;
 let memoryEventId = 2;
 
 export function getConfiguredBotToken() {
@@ -86,6 +97,105 @@ export function validateBandoBotAuth(headers) {
   const supplied = headers["x-bando-token"] ?? bearer;
 
   return supplied === expected ? null : "Yêu cầu BOT không được phép.";
+}
+
+export async function getBandoAuthStatus(headers = {}) {
+  const hasUsers = await hasAdminUsers();
+  const auth = await validateBandoAdminAuth(headers, { optional: true });
+  return { ok: true, hasUsers, user: auth.ok ? publicAdminUser(auth.user) : null };
+}
+
+export async function registerBandoAdmin(args = {}, headers = {}) {
+  const username = normalizeUsername(args.username);
+  const password = String(args.password || "");
+  if (!username || password.length < 4) {
+    return { ok: false, error: "Ten dang nhap va mat khau toi thieu 4 ky tu." };
+  }
+
+  const hasUsers = await hasAdminUsers();
+  if (hasUsers && process.env.BANDO_ALLOW_PUBLIC_REGISTER !== "1") {
+    const auth = await validateBandoAdminAuth(headers);
+    if (!auth.ok) return auth;
+  }
+
+  const passwordRecord = createPasswordRecord(password);
+  const mysqlResult = await insertBandoAdminUserMysql({
+    username,
+    ...passwordRecord,
+    role: "admin",
+    active: true,
+  });
+  if (mysqlResult) {
+    if (!mysqlResult.ok) return mysqlResult;
+    const token = createAuthToken(mysqlResult.user);
+    return { ok: true, user: publicAdminUser(mysqlResult.user), token, storage: "mysql" };
+  }
+
+  if (memoryState.adminUsers.some((user) => user.username === username)) {
+    return { ok: false, error: "Ten dang nhap da ton tai." };
+  }
+  const now = new Date().toISOString();
+  const user = {
+    id: memoryAdminUserId++,
+    username,
+    ...passwordRecord,
+    role: "admin",
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  memoryState.adminUsers.push(user);
+  const token = createAuthToken(user);
+  return { ok: true, user: publicAdminUser(user), token, storage: "memory" };
+}
+
+export async function loginBandoAdmin(args = {}) {
+  const username = normalizeUsername(args.username);
+  const password = String(args.password || "");
+  if (!username || !password) return { ok: false, error: "Thieu ten dang nhap hoac mat khau." };
+
+  const mysqlResult = await findBandoAdminUserByUsernameMysql(username);
+  if (mysqlResult) {
+    if (!mysqlResult.user || !verifyPassword(password, mysqlResult.user)) {
+      return { ok: false, error: "Sai ten dang nhap hoac mat khau." };
+    }
+    const token = createAuthToken(mysqlResult.user);
+    return { ok: true, user: publicAdminUser(mysqlResult.user), token, storage: "mysql" };
+  }
+
+  const user = memoryState.adminUsers.find((entry) => entry.username === username && entry.active);
+  if (!user || !verifyPassword(password, user)) {
+    return { ok: false, error: "Sai ten dang nhap hoac mat khau." };
+  }
+  const token = createAuthToken(user);
+  return { ok: true, user: publicAdminUser(user), token, storage: "memory" };
+}
+
+export async function validateBandoAdminAuth(headers = {}, options = {}) {
+  if (process.env.BANDO_DISABLE_ADMIN_AUTH === "1") {
+    return { ok: true, user: { id: 0, username: "dev", role: "admin" } };
+  }
+
+  const auth = String(headers.authorization || "");
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  const supplied = String(headers["x-bando-admin-token"] || bearer || "").trim();
+  if (!supplied) {
+    return options.optional ? { ok: false, error: "" } : { ok: false, error: "Chua dang nhap quan tri." };
+  }
+
+  const payload = verifyAuthToken(supplied);
+  if (!payload) {
+    return options.optional ? { ok: false, error: "" } : { ok: false, error: "Phien dang nhap het han hoac khong hop le." };
+  }
+
+  return {
+    ok: true,
+    user: {
+      id: Number(payload.sub) || 0,
+      username: String(payload.username || ""),
+      role: String(payload.role || "admin"),
+    },
+  };
 }
 
 export async function listBandoState(args = {}) {
@@ -694,6 +804,8 @@ export async function confirmBandoDelivery(args) {
 }
 
 export async function updateBandoPrice(args) {
+  const gameName = normalizeGameName(args.gameName);
+  const serverName = normalizeServerName(args.serverName) || "default";
   const code = String(args.code || "").trim().toLowerCase();
   const itemId = args.itemId == null || Number.isNaN(Number(args.itemId)) ? null : Number(args.itemId);
   const name = String(args.name || code).trim() || code;
@@ -710,6 +822,8 @@ export async function updateBandoPrice(args) {
 
   const mysqlResult = await updateBandoItemMysql({
     code,
+    gameName,
+    serverName,
     itemId,
     name,
     buyName,
@@ -726,6 +840,8 @@ export async function updateBandoPrice(args) {
   if (!item) {
     const newItem = {
       code,
+      gameName,
+      serverName,
       itemId,
       name,
       buyName,
@@ -742,6 +858,8 @@ export async function updateBandoPrice(args) {
   }
 
   item.itemId = itemId;
+  item.gameName = gameName;
+  item.serverName = serverName;
   item.name = name;
   item.buyName = buyName;
   item.aliases = aliases;
@@ -813,8 +931,64 @@ export async function deleteBandoBankAccount(id) {
   return { ok: true, id: accountId };
 }
 
-export async function importBandoItemsFromServer() {
-  const result = await importServerItemsMysql();
+export async function listBandoGameServers() {
+  const mysqlResult = await listBandoGameServersMysql();
+  if (mysqlResult) return mysqlResult;
+  return {
+    ok: true,
+    gameServers: memoryState.gameServers.map((server) => ({ ...server })),
+    storage: "memory",
+  };
+}
+
+export async function upsertBandoGameServer(args) {
+  const normalized = normalizeGameServer(args);
+  if (!normalized.ok) return normalized;
+
+  const mysqlResult = await upsertBandoGameServerMysql(normalized.gameServer);
+  if (mysqlResult) return mysqlResult;
+
+  const now = new Date().toISOString();
+  const existing = normalized.gameServer.id
+    ? memoryState.gameServers.find((server) => server.id === normalized.gameServer.id)
+    : null;
+  if (normalized.gameServer.isDefault) {
+    for (const server of memoryState.gameServers) {
+      if (matchesGame(server.gameName, normalized.gameServer.gameName)) server.isDefault = false;
+    }
+  }
+  if (existing) {
+    Object.assign(existing, normalized.gameServer, { updatedAt: now });
+    return { ok: true, gameServer: { ...existing }, storage: "memory" };
+  }
+
+  const gameServer = {
+    ...normalized.gameServer,
+    id: memoryGameServerId++,
+    createdAt: now,
+    updatedAt: now,
+  };
+  memoryState.gameServers.push(gameServer);
+  return { ok: true, gameServer: { ...gameServer }, storage: "memory" };
+}
+
+export async function deleteBandoGameServer(id) {
+  const mysqlResult = await deleteBandoGameServerMysql(id);
+  if (mysqlResult) return mysqlResult;
+
+  const serverId = Number(id);
+  if (!Number.isInteger(serverId) || serverId <= 0) return { ok: false, error: "Thieu ID server." };
+  const before = memoryState.gameServers.length;
+  memoryState.gameServers = memoryState.gameServers.filter((server) => server.id !== serverId);
+  if (before === memoryState.gameServers.length) return { ok: false, error: "Khong tim thay server." };
+  return { ok: true, id: serverId, storage: "memory" };
+}
+
+export async function importBandoItemsFromServer(args = {}) {
+  const result = await importServerItemsMysql({
+    gameName: args.gameName,
+    serverName: args.serverName,
+  });
   if (!result) {
     return {
       ok: false,
@@ -863,6 +1037,7 @@ function cloneMemoryState() {
     coinTrades: memoryState.coinTrades.map((trade) => ({ ...trade })),
     transactions: memoryState.transactions.map((transaction) => ({ ...transaction })),
     bankAccounts: memoryState.bankAccounts.map((account) => ({ ...account })),
+    gameServers: memoryState.gameServers.map((server) => ({ ...server })),
     events: memoryState.events.map((event) => ({ ...event })),
     storage: "memory",
   };
@@ -870,11 +1045,88 @@ function cloneMemoryState() {
 
 function filterMemoryStateByServer(state, gameName, serverName) {
   if (!gameName && !serverName) return state;
+  const gameItems = state.items.filter((item) => matchesGame(item.gameName, gameName));
+  const scopedItems = serverName ? gameItems.filter((item) => matchesServer(item.serverName, serverName)) : gameItems;
+  const legacyItems = serverName
+    ? gameItems.filter((item) => !normalizeServerName(item.serverName) || matchesServer(item.serverName, "default"))
+    : gameItems;
   return {
     ...state,
+    items: serverName && scopedItems.length > 0 ? scopedItems : legacyItems,
     orders: state.orders.filter((order) => matchesGame(order.gameName, gameName) && matchesServer(order.serverName, serverName)),
     coinTrades: state.coinTrades.filter((trade) => matchesGame(trade.gameName, gameName) && matchesServer(trade.serverName, serverName)),
   };
+}
+
+async function hasAdminUsers() {
+  const mysqlResult = await countBandoAdminUsersMysql();
+  if (mysqlResult) return mysqlResult.count > 0;
+  return memoryState.adminUsers.length > 0;
+}
+
+function publicAdminUser(user) {
+  if (!user) return null;
+  return {
+    id: Number(user.id) || 0,
+    username: String(user.username || ""),
+    role: String(user.role || "admin"),
+  };
+}
+
+function normalizeUsername(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]/g, "")
+    .slice(0, 64);
+}
+
+function normalizeGameServer(args = {}) {
+  const id = Number(args.id);
+  const gameName = normalizeGameName(args.gameName);
+  const name = normalizeServerName(args.name);
+  const code = String(args.code || name).trim();
+  const status = normalizeGameServerStatus(args.status);
+  const dbHost = String(args.dbHost || "").trim();
+  const dbPort = Math.max(1, Math.trunc(Number(args.dbPort) || 3306));
+  const dbUser = String(args.dbUser || "").trim();
+  const dbPassword = String(args.dbPassword ?? "").trim();
+  const dbGameDatabase = String(args.dbGameDatabase || "").trim();
+  const dbPlayerDatabase = String(args.dbPlayerDatabase || "").trim();
+
+  if (!name || !code || !dbHost || !dbUser || !dbGameDatabase || !dbPlayerDatabase) {
+    return { ok: false, error: "Thieu ten server, ma server hoac thong tin DB game/player." };
+  }
+
+  return {
+    ok: true,
+    gameServer: {
+      id: Number.isInteger(id) && id > 0 ? id : null,
+      gameName,
+      name,
+      code,
+      status,
+      dbHost,
+      dbPort,
+      dbUser,
+      dbPassword,
+      dbGameDatabase,
+      dbPlayerDatabase,
+      socketHost: String(args.socketHost || "").trim(),
+      socketPort: Math.max(1, Math.trunc(Number(args.socketPort) || 5900)),
+      socketKey: String(args.socketKey || "").trim(),
+      socketPortWeb: String(args.socketPortWeb ?? "").trim(),
+      socketKeyWeb: String(args.socketKeyWeb ?? "").trim(),
+      isDefault: Boolean(args.isDefault),
+      displayOrder: Math.trunc(Number(args.displayOrder) || 0),
+      dayOpen: String(args.dayOpen ?? "").trim(),
+    },
+  };
+}
+
+function normalizeGameServerStatus(value) {
+  const status = String(value || "offline").trim().toLowerCase();
+  return ["online", "offline", "maintenance", "new"].includes(status) ? status : "offline";
 }
 
 function normalizeGameName(value) {
