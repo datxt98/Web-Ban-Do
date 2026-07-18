@@ -1,0 +1,442 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f5f7fa;
+  --foreground: #18212f;
+  --panel: #ffffff;
+  --muted: #657287;
+  --line: #dce3ec;
+  --line-strong: #c7d1dd;
+  --blue: #2563eb;
+  --green: #13845f;
+  --amber: #a56300;
+  --red: #bf3b3b;
+  --ink: #101827;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  margin: 0;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.adminShell {
+  display: grid;
+  gap: 16px;
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.topBar {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  min-height: 76px;
+  padding: 16px 18px;
+}
+
+.topBar h1,
+.panelHeader h2 {
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.topBar h1 {
+  font-size: 1.35rem;
+}
+
+.panelHeader h2 {
+  font-size: 1.05rem;
+}
+
+.kicker {
+  color: var(--muted);
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 760;
+  letter-spacing: 0;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.topActions,
+.tabBar,
+.panelHeader,
+.rowActions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.topActions,
+.panelHeader {
+  justify-content: space-between;
+}
+
+.dbBadge,
+.toolButton,
+.primaryButton,
+.miniButton,
+.tab {
+  align-items: center;
+  border: 1px solid var(--line);
+  display: inline-flex;
+  gap: 8px;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.dbBadge {
+  background: #f8fafc;
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 720;
+}
+
+.toolButton,
+.miniButton,
+.tab {
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 720;
+}
+
+.primaryButton {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #ffffff;
+  font-weight: 760;
+}
+
+.primaryButton.wide {
+  width: 100%;
+}
+
+.miniButton {
+  font-size: 0.82rem;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.miniButton.muted {
+  color: var(--muted);
+}
+
+.tabBar {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 8px;
+}
+
+.tab {
+  min-width: 132px;
+}
+
+.tab.active {
+  background: #eaf1ff;
+  border-color: rgba(37, 99, 235, 0.35);
+  color: var(--blue);
+}
+
+.statsRow {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.statBox {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+}
+
+.statBox span,
+.dataTable th,
+.resultRow small,
+.priceForm label span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.statBox strong {
+  font-size: 1.05rem;
+}
+
+.notice {
+  border: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.notice.ok {
+  background: #edf8f3;
+  border-color: rgba(19, 132, 95, 0.26);
+  color: var(--green);
+}
+
+.notice.error {
+  background: #fff0f0;
+  border-color: rgba(191, 59, 59, 0.24);
+  color: var(--red);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  min-width: 0;
+  padding: 16px;
+}
+
+.splitGrid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 430px);
+}
+
+.dataTableWrap {
+  border: 1px solid var(--line);
+  margin-top: 14px;
+  overflow: auto;
+}
+
+.dataTable {
+  border-collapse: collapse;
+  min-width: 820px;
+  width: 100%;
+}
+
+.dataTable th,
+.dataTable td {
+  border-bottom: 1px solid var(--line);
+  padding: 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.dataTable th {
+  background: #f8fafc;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.dataTable td {
+  font-size: 0.92rem;
+}
+
+.dataTable tr:last-child td {
+  border-bottom: 0;
+}
+
+.emptyCell,
+.emptyBlock {
+  color: var(--muted);
+  text-align: center;
+}
+
+.emptyCell {
+  padding: 24px;
+}
+
+.emptyBlock {
+  border: 1px dashed var(--line-strong);
+  padding: 20px;
+}
+
+.searchBox {
+  align-items: center;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto 1fr;
+  margin-top: 14px;
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+.searchBox input,
+.priceForm input {
+  border: 0;
+  min-height: 40px;
+  min-width: 0;
+  outline: 0;
+}
+
+.priceForm input {
+  border: 1px solid var(--line);
+  padding: 0 10px;
+}
+
+.resultList {
+  border: 1px solid var(--line);
+  display: grid;
+  margin-top: 12px;
+  max-height: 560px;
+  overflow: auto;
+}
+
+.resultRow {
+  background: #ffffff;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 72px minmax(0, 1fr) 72px;
+  justify-content: stretch;
+  min-height: 46px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.resultRow:last-child {
+  border-bottom: 0;
+}
+
+.resultRow.active,
+.resultRow:hover {
+  background: #f0f6ff;
+}
+
+.resultRow span {
+  color: var(--blue);
+  font-family: var(--font-geist-mono), Consolas, monospace;
+}
+
+.resultRow strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.priceForm {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.priceForm label {
+  display: grid;
+  gap: 6px;
+}
+
+.selectedItem {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.selectedItem span {
+  color: var(--blue);
+  font-family: var(--font-geist-mono), Consolas, monospace;
+  font-size: 0.82rem;
+}
+
+.checkLine {
+  align-items: center !important;
+  color: var(--ink);
+  display: flex !important;
+  gap: 10px !important;
+}
+
+.checkLine input {
+  min-height: auto;
+  width: 18px;
+}
+
+.status {
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 760;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
+.status.awaiting_payment {
+  background: #fff4dd;
+  color: var(--amber);
+}
+
+.status.paid {
+  background: #eaf8f2;
+  color: var(--green);
+}
+
+.status.completed {
+  background: #eaf1ff;
+  color: var(--blue);
+}
+
+.status.cancelled {
+  background: #fff0f0;
+  color: var(--red);
+}
+
+@media (max-width: 1040px) {
+  .statsRow,
+  .splitGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .adminShell {
+    padding: 12px;
+  }
+
+  .topBar,
+  .panelHeader,
+  .tabBar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .topActions,
+  .rowActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .statsRow,
+  .splitGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .tab,
+  .toolButton,
+  .primaryButton,
+  .dbBadge {
+    width: 100%;
+  }
+}

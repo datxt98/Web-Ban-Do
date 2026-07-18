@@ -1,0 +1,22 @@
+{
+  "name": "nso-bando-control",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "install:all": "npm install",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:frontend": "npm --workspace frontend run dev",
+    "dev:backend": "npm --workspace backend run dev",
+    "build": "npm --workspace frontend run build",
+    "start": "npm --workspace backend run start",
+    "test": "npm --workspace backend run test && npm --workspace frontend run build",
+    "lint": "npm test"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
