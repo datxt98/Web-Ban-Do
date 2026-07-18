@@ -262,6 +262,13 @@ export function createApp(options = {}) {
     return res.json(result);
   }));
 
+  app.use("/api", (_req, res) => {
+    res.status(404).json({
+      ok: false,
+      error: "Không tìm thấy API. Hãy kiểm tra backend đang chạy đúng bản code.",
+    });
+  });
+
   if (serveFrontend) {
     const distPath = path.resolve(__dirname, "../../frontend/dist");
     const indexPath = path.join(distPath, "index.html");

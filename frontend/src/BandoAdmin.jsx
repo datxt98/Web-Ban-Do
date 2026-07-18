@@ -139,7 +139,18 @@ async function jsonFetch(url, init = {}) {
     ...requestInit,
     headers,
   });
-  const payload = await response.json();
+  const responseText = await response.text();
+  let payload = null;
+  if (responseText) {
+    try {
+      payload = JSON.parse(responseText);
+    } catch {
+      payload = null;
+    }
+  }
+  if (!payload) {
+    throw new Error("API không trả JSON. Hãy kiểm tra backend đang chạy đúng port và đúng bản code.");
+  }
   if (!response.ok) {
     throw new Error(payload.error ?? "Yêu cầu thất bại.");
   }
