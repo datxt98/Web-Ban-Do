@@ -365,6 +365,37 @@ button:disabled {
   margin: 0;
 }
 
+.historySplit {
+  display: grid;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.historyBlock {
+  background: #fbfcfe;
+  border: 1px solid var(--line);
+  min-width: 0;
+  padding: 14px;
+}
+
+.historyBlockHeader {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.historyBlockHeader h3 {
+  font-size: 1rem;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.historyBlock .dataTableWrap {
+  background: #ffffff;
+  margin-top: 12px;
+}
+
 .coinTradeBox label {
   display: grid;
   gap: 6px;

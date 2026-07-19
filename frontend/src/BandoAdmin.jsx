@@ -468,6 +468,16 @@ export default function BandoAdmin() {
     [state.orders],
   );
 
+  const buyCoinTrades = useMemo(
+    () => (state.coinTrades ?? []).filter((trade) => trade.type === "buy_xu"),
+    [state.coinTrades],
+  );
+
+  const sellCoinTrades = useMemo(
+    () => (state.coinTrades ?? []).filter((trade) => trade.type === "sell_xu"),
+    [state.coinTrades],
+  );
+
   const gameOptions = useMemo(() => {
     const options = new Map(gameOptionsDefault.map((name) => [gameKey(name), name]));
     const addOption = (profile) => {
@@ -886,6 +896,103 @@ export default function BandoAdmin() {
       },
     };
     return upsertServerProfile(botConfig, body, activeGameName, activeServerName);
+  }
+
+  function renderBuyCoinTradeRows(trades) {
+    return (
+      <>
+        {trades.map((trade) => (
+          <tr key={trade.orderCode}>
+            <td>{trade.orderCode}</td>
+            <td>{trade.characterName}</td>
+            <td>{formatXu(trade.coinAmount)}</td>
+            <td>{formatVnd(1000)} = {formatXu(coinAmountForRate(trade.rate))}</td>
+            <td>{formatVnd(trade.totalAmount)}</td>
+            <td>
+              <span className={`status ${trade.status}`}>{coinTradeStatusLabel(trade.status, trade.type)}</span>
+            </td>
+            <td className="rowActions">
+              {trade.status === "awaiting_payment" && (
+                <button
+                  className="miniButton"
+                  disabled={busy}
+                  onClick={() =>
+                    void runAction(async () => {
+                      await jsonFetch(`/api/bando/orders/${trade.orderCode}/approve`, {
+                        method: "POST",
+                        body: JSON.stringify({ note: "Admin duyệt mua xu trên web" }),
+                      });
+                      return `Đã duyệt mua xu ${trade.orderCode}. BOT sẽ giao xu khi khách mời giao dịch.`;
+                    })
+                  }
+                >
+                  <CheckCircle2 size={15} />
+                  Duyệt mua
+                </button>
+              )}
+            </td>
+          </tr>
+        ))}
+        {trades.length === 0 && (
+          <tr>
+            <td colSpan={7} className="emptyCell">
+              Chưa có lịch sử khách mua xu.
+            </td>
+          </tr>
+        )}
+      </>
+    );
+  }
+
+  function renderSellCoinTradeRows(trades) {
+    return (
+      <>
+        {trades.map((trade) => (
+          <tr key={trade.orderCode}>
+            <td>{trade.orderCode}</td>
+            <td>{trade.characterName}</td>
+            <td>{formatXu(trade.receivedCoinAmount || trade.coinAmount)}</td>
+            <td>{formatVnd(1000)} = {formatXu(coinAmountForRate(trade.rate))}</td>
+            <td>{formatVnd(trade.totalAmount)}</td>
+            <td>
+              <span className={`status ${trade.status}`}>{coinTradeStatusLabel(trade.status, trade.type)}</span>
+            </td>
+            <td>
+              {trade.bankName || trade.accountNumber || trade.accountName
+                ? `${trade.bankName} - ${trade.accountNumber} - ${trade.accountName}`
+                : "-"}
+            </td>
+            <td className="rowActions">
+              {trade.status === "completed" && (
+                <button
+                  className="miniButton"
+                  disabled={busy || !trade.bankName || !trade.accountNumber || !trade.accountName}
+                  onClick={() =>
+                    void runAction(async () => {
+                      await jsonFetch(`/api/bando/coin-trades/${trade.orderCode}/payout/approve`, {
+                        method: "POST",
+                        body: JSON.stringify({ note: "Admin duyệt trả tiền bán xu trên web" }),
+                      });
+                      return `Đã duyệt trả tiền phiếu ${trade.orderCode}.`;
+                    })
+                  }
+                >
+                  <CheckCircle2 size={15} />
+                  {trade.bankName && trade.accountNumber && trade.accountName ? "Duyệt trả tiền" : "Thiếu STK"}
+                </button>
+              )}
+            </td>
+          </tr>
+        ))}
+        {trades.length === 0 && (
+          <tr>
+            <td colSpan={8} className="emptyCell">
+              Chưa có lịch sử khách bán xu.
+            </td>
+          </tr>
+        )}
+      </>
+    );
   }
 
   useEffect(() => {
@@ -1795,87 +1902,59 @@ export default function BandoAdmin() {
             </div>
           </div>
 
-          <div className="dataTableWrap">
-            <table className="dataTable">
-              <thead>
-                <tr>
-                  <th>Mã phiếu</th>
-                  <th>Nhân vật</th>
-                  <th>Loại</th>
-                  <th>Số xu</th>
-                  <th>Tỷ giá</th>
-                  <th>Số tiền</th>
-                  <th>Trạng thái</th>
-                  <th>Thông tin nhận tiền</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {(state.coinTrades ?? []).map((trade) => (
-                  <tr key={trade.orderCode}>
-                    <td>{trade.orderCode}</td>
-                    <td>{trade.characterName}</td>
-                    <td>{coinTradeTypeLabel(trade.type)}</td>
-                    <td>{formatXu(trade.receivedCoinAmount || trade.coinAmount)}</td>
-                    <td>{formatVnd(1000)} = {formatXu(coinAmountForRate(trade.rate))}</td>
-                    <td>{formatVnd(trade.totalAmount)}</td>
-                    <td>
-                      <span className={`status ${trade.status}`}>{coinTradeStatusLabel(trade.status, trade.type)}</span>
-                    </td>
-                    <td>
-                      {trade.bankName || trade.accountNumber || trade.accountName
-                        ? `${trade.bankName} - ${trade.accountNumber} - ${trade.accountName}`
-                        : "-"}
-                    </td>
-                    <td className="rowActions">
-                      {trade.type === "buy_xu" && trade.status === "awaiting_payment" && (
-                        <button
-                          className="miniButton"
-                          disabled={busy}
-                          onClick={() =>
-                            void runAction(async () => {
-                              await jsonFetch(`/api/bando/orders/${trade.orderCode}/approve`, {
-                                method: "POST",
-                                body: JSON.stringify({ note: "Admin duyệt mua xu trên web" }),
-                              });
-                              return `Đã duyệt mua xu ${trade.orderCode}. BOT sẽ giao xu khi khách mời giao dịch.`;
-                            })
-                          }
-                        >
-                          <CheckCircle2 size={15} />
-                          Duyệt mua
-                        </button>
-                      )}
-                      {trade.type === "sell_xu" && trade.status === "completed" && (
-                        <button
-                          className="miniButton"
-                          disabled={busy || !trade.bankName || !trade.accountNumber || !trade.accountName}
-                          onClick={() =>
-                            void runAction(async () => {
-                              await jsonFetch(`/api/bando/coin-trades/${trade.orderCode}/payout/approve`, {
-                                method: "POST",
-                                body: JSON.stringify({ note: "Admin duyệt trả tiền bán xu trên web" }),
-                              });
-                              return `Đã duyệt trả tiền phiếu ${trade.orderCode}.`;
-                            })
-                          }
-                        >
-                          <CheckCircle2 size={15} />
-                          {trade.bankName && trade.accountNumber && trade.accountName ? "Duyệt trả tiền" : "Thiếu STK"}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {(state.coinTrades ?? []).length === 0 && (
-                  <tr>
-                    <td colSpan={9} className="emptyCell">
-                      Chưa có lịch sử mua bán xu.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+          <div className="historySplit">
+            <div className="historyBlock">
+              <div className="historyBlockHeader">
+                <div>
+                  <span className="kicker">BOT bán xu cho khách</span>
+                  <h3>Khách mua xu</h3>
+                </div>
+                <span className="dbBadge">{buyCoinTrades.length} phiếu</span>
+              </div>
+              <div className="dataTableWrap">
+                <table className="dataTable">
+                  <thead>
+                    <tr>
+                      <th>Mã phiếu</th>
+                      <th>Nhân vật</th>
+                      <th>Số xu mua</th>
+                      <th>Tỷ giá</th>
+                      <th>Khách trả</th>
+                      <th>Trạng thái</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>{renderBuyCoinTradeRows(buyCoinTrades)}</tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="historyBlock">
+              <div className="historyBlockHeader">
+                <div>
+                  <span className="kicker">BOT nhập xu từ khách</span>
+                  <h3>Khách bán xu</h3>
+                </div>
+                <span className="dbBadge">{sellCoinTrades.length} phiếu</span>
+              </div>
+              <div className="dataTableWrap">
+                <table className="dataTable">
+                  <thead>
+                    <tr>
+                      <th>Mã phiếu</th>
+                      <th>Nhân vật</th>
+                      <th>Số xu nhận</th>
+                      <th>Tỷ giá</th>
+                      <th>Phải trả khách</th>
+                      <th>Trạng thái</th>
+                      <th>Thông tin nhận tiền</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>{renderSellCoinTradeRows(sellCoinTrades)}</tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </section>
       )}
