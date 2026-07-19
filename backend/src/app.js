@@ -49,6 +49,15 @@ export function createApp(options = {}) {
     app.use(morgan("dev"));
   }
 
+  app.use("/api", (req, res, next) => {
+    delete req.headers["if-none-match"];
+    delete req.headers["if-modified-since"];
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
+    return next();
+  });
+
   app.get("/health", (_req, res) => {
     res.json({ ok: true, service: "nso-bando-backend" });
   });
