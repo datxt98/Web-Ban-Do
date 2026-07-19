@@ -208,6 +208,60 @@ export async function approveBandoOrderMysql(orderCode, note) {
   });
 }
 
+export async function cancelBandoRecordMysql(code, note) {
+  return withBandoConnection(async (conn) => {
+    const lookupCode = String(code || "").trim().toUpperCase();
+    if (!lookupCode) return { ok: false, error: "Thieu ma don." };
+
+    const [orderRows] = await conn.query(
+      `SELECT *
+       FROM bando_orders
+       WHERE order_code = ? OR payment_code = ?
+       LIMIT 1`,
+      [lookupCode, lookupCode],
+    );
+    if (orderRows.length > 0) {
+      const order = mapOrder(orderRows[0]);
+      if (order.status === "completed") {
+        return { ok: false, error: "Don nay da giao xong, khong the huy." };
+      }
+      if (order.status === "cancelled") {
+        return { ok: true, order };
+      }
+
+      const cancelledAt = new Date().toISOString();
+      await conn.execute("UPDATE bando_orders SET status = ? WHERE order_code = ?", [
+        "cancelled",
+        order.orderCode,
+      ]);
+      await conn.execute("UPDATE bando_coin_trades SET status = ? WHERE order_code = ?", [
+        "cancelled",
+        order.orderCode,
+      ]);
+      await insertTransaction(conn, order.orderCode, order.paymentCode, order.totalAmount, "cancelled", note || "Admin huy don");
+      await insertEvent(conn, order.orderCode, "order_cancelled", note || `Admin huy don ${order.orderCode}.`);
+      return { ok: true, order: { ...order, status: "cancelled", cancelledAt } };
+    }
+
+    const [tradeRows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [lookupCode]);
+    if (tradeRows.length === 0) {
+      return { ok: false, error: "Khong tim thay don hoac phieu xu." };
+    }
+
+    const trade = mapCoinTrade(tradeRows[0]);
+    if (trade.status === "payout_completed") {
+      return { ok: false, error: "Phieu xu da duyet tra tien, khong the huy." };
+    }
+    if (trade.status === "cancelled") {
+      return { ok: true, coinTrade: trade };
+    }
+
+    await conn.execute("UPDATE bando_coin_trades SET status = ? WHERE order_code = ?", ["cancelled", trade.orderCode]);
+    await insertEvent(conn, trade.orderCode, "coin_trade_cancelled", note || `Admin huy phieu xu ${trade.orderCode}.`);
+    return { ok: true, coinTrade: { ...trade, status: "cancelled" } };
+  });
+}
+
 export async function listPendingDeliveriesMysql(args = {}) {
   return withBandoConnection(async (conn) => {
     const gameName = normalizeGameName(args.gameName);

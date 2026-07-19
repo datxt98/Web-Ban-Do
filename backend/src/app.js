@@ -9,6 +9,7 @@ import { handleBankPaymentPayload, validateBankWebhookAuth } from "./bank-paymen
 import {
   approveBandoOrder,
   approveCoinTradePayout,
+  cancelBandoRecord,
   confirmBandoBotNotification,
   confirmBandoDelivery,
   confirmBandoPayment,
@@ -175,6 +176,16 @@ export function createApp(options = {}) {
 
   app.post("/api/bando/orders/:orderCode/approve", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await approveBandoOrder({
+      orderCode: req.params.orderCode,
+      note: req.body.note,
+    });
+
+    if (!result.ok) return res.status(400).json(result);
+    return res.json(result);
+  }));
+
+  app.post("/api/bando/orders/:orderCode/cancel", authorizeAdmin, asyncHandler(async (req, res) => {
+    const result = await cancelBandoRecord({
       orderCode: req.params.orderCode,
       note: req.body.note,
     });

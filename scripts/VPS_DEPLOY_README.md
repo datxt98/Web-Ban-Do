@@ -58,3 +58,26 @@ BANDO_PUBLIC_URL=http://YOUR_PUBLIC_IP:1122
 ```
 
 Keep real API tokens and callback signatures out of Git. Configure bank accounts and signatures from the BANDO admin web after the server is running.
+
+## Telegram Admin Bot
+
+The Telegram bot uses polling, so you do not need HTTPS or a Telegram webhook.
+
+Add these values to `.env` on the VPS:
+
+```text
+BANDO_TELEGRAM_ENABLED=1
+BANDO_TELEGRAM_BOT_TOKEN=bot-token-from-botfather
+BANDO_TELEGRAM_CHAT_IDS=your-chat-id
+BANDO_TELEGRAM_ALLOWED_USER_IDS=your-telegram-user-id
+BANDO_TELEGRAM_POLL_MS=2500
+```
+
+Commands:
+
+```text
+/id              show chat id and user id
+/duyet <ma_don>  approve item/xu buy order payment
+/huy <ma_don>    cancel an order or xu ticket
+/traxu <ma>      approve payout for a customer sell-xu ticket
+```
