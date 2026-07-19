@@ -6,6 +6,10 @@ process.env.BANDO_DISABLE_ADMIN_AUTH = "1";
 process.env.NODE_ENV = "test";
 
 const { createApp } = await import("../src/app.js");
+const { subscribeBandoEvents } = await import("../src/bando-events.js");
+
+const safeOrderCodePattern = /^BD[1-9A-HJ-KM-NP-Z]{4,10}$/;
+const safeCoinTradeCodePattern = /^SX[1-9A-HJ-KM-NP-Z]{4,10}$/;
 
 function listen(app) {
   return new Promise((resolve) => {
@@ -109,7 +113,7 @@ test("Bando API tạo đơn, khớp thanh toán và xác nhận giao hàng", asy
     assert.equal(orderPayload.order.quantity, 200);
     assert.equal(orderPayload.order.totalAmount, 2400000);
     assert.equal(orderPayload.order.paymentCode, orderPayload.order.orderCode);
-    assert.match(orderPayload.order.paymentCode, /^BD[A-Z0-9]{4,10}$/);
+    assert.match(orderPayload.order.paymentCode, safeOrderCodePattern);
     assert.match(orderPayload.reply, /Noi dung chuyen khoan:/);
     assert.match(orderPayload.reply, /VCB/);
     assert.match(orderPayload.reply, /0123456789/);
@@ -232,6 +236,7 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     assert.equal(buyPayload.coinTrade.type, "buy_xu");
     assert.equal(buyPayload.order.paymentCode, buyPayload.order.orderCode);
     assert.equal(buyPayload.coinTrade.paymentCode, buyPayload.order.orderCode);
+    assert.match(buyPayload.order.orderCode, safeOrderCodePattern);
 
     const payCoinResponse = await fetch(`${baseUrl}/api/bando/payments/confirm`, {
       method: "POST",
@@ -260,6 +265,7 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     const sellPayload = await sellResponse.json();
     assert.equal(sellPayload.coinTrade.type, "sell_xu");
     assert.equal(sellPayload.coinTrade.totalAmount, 10000);
+    assert.match(sellPayload.coinTrade.orderCode, safeCoinTradeCodePattern);
 
     const pendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending`);
     assert.equal(pendingResponse.status, 200);
@@ -828,7 +834,7 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
     assert.equal(orderResponse.status, 201);
     const orderPayload = await orderResponse.json();
     assert.equal(orderPayload.order.paymentCode, orderPayload.order.orderCode);
-    assert.match(orderPayload.order.paymentCode, /^BD[A-Z0-9]{4,10}$/);
+    assert.match(orderPayload.order.paymentCode, safeOrderCodePattern);
 
     const webhookResponse = await fetch(`${baseUrl}/api/bando/payments/bank-webhook`, {
       method: "POST",
@@ -881,6 +887,44 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
     assert.equal(duplicateResponse.status, 200);
     const duplicatePayload = await duplicateResponse.json();
     assert.equal(duplicatePayload.results[0].status, "already_paid");
+
+    const bankEvents = [];
+    const unsubscribe = subscribeBandoEvents((event) => bankEvents.push(event));
+    try {
+      const unmatchedResponse = await fetch(`${baseUrl}/api/bando/payments/bank-webhook`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          signature: "unit-bank-signature",
+        },
+        body: JSON.stringify({
+          TranList: [
+            {
+              transactionID: "MBB-UNMATCHED-1",
+              creditAmount: "123456",
+              debitAmount: "0",
+              senderBankName: "ACB",
+              senderName: "NGUYEN VAN B",
+              senderAccount: "123000111",
+              accountNo: "0354340126",
+              description: "chuyen tien khong co ma nap",
+              transactionType: "credit",
+            },
+          ],
+        }),
+      });
+      assert.equal(unmatchedResponse.status, 200);
+      const unmatchedPayload = await unmatchedResponse.json();
+      assert.equal(unmatchedPayload.ignored, 1);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const unmatchedEvent = bankEvents.find((event) => event.type === "bank_unmatched_payment");
+      assert.ok(unmatchedEvent);
+      assert.equal(unmatchedEvent.payload.bankTransaction.amount, 123456);
+      assert.equal(unmatchedEvent.payload.bankTransaction.senderBankName, "ACB");
+      assert.equal(unmatchedEvent.payload.bankTransaction.description, "chuyen tien khong co ma nap");
+    } finally {
+      unsubscribe();
+    }
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

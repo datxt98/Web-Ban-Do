@@ -1,6 +1,8 @@
 import { confirmBandoPayment } from "./bando-storage.js";
+import { emitBandoEvent } from "./bando-events.js";
 
 const PAYMENT_CODE_PATTERN = /\bBD[A-Z0-9]{4,10}\b/i;
+const UNMATCHED_BANK_CACHE_MS = 6 * 60 * 60 * 1000;
 const ARRAY_KEYS = [
   "TranList",
   "tranList",
@@ -59,6 +61,41 @@ const ID_KEYS = [
   "bankTransactionId",
 ];
 const TYPE_KEYS = ["type", "transactionType", "txnType", "direction", "creditDebitIndicator", "cd", "sign"];
+const SENDER_BANK_KEYS = [
+  "senderBankName",
+  "senderBank",
+  "fromBank",
+  "remitterBank",
+  "counterAccountBankName",
+  "bankName",
+  "bankCode",
+  "bank",
+];
+const SENDER_ACCOUNT_KEYS = [
+  "senderAccount",
+  "senderAccountNo",
+  "fromAccount",
+  "fromAccountNo",
+  "debitAccount",
+  "counterAccountNumber",
+  "remitterAccount",
+];
+const SENDER_NAME_KEYS = [
+  "senderName",
+  "fromName",
+  "remitterName",
+  "counterAccountName",
+  "payerName",
+];
+const RECEIVER_ACCOUNT_KEYS = [
+  "accountNo",
+  "accountNumber",
+  "beneficiaryAccount",
+  "toAccount",
+  "receiverAccount",
+];
+
+const unmatchedBankTransactionCache = new Map();
 
 export function validateBankWebhookAuth(req, options = {}) {
   const expected = String(process.env.BANDO_BANK_WEBHOOK_TOKEN || "").trim();
@@ -110,6 +147,7 @@ export async function handleBankPaymentPayload(payload, options = {}) {
     if (!transaction.paymentCode) {
       ignored += 1;
       results.push(toPublicTransactionResult(transaction, "ignored", "Khong tim thay ma don BD trong noi dung."));
+      notifyUnmatchedIncomingTransaction(transaction, "Khong tim thay ma don BD trong noi dung.");
       continue;
     }
 
@@ -146,6 +184,9 @@ export async function handleBankPaymentPayload(payload, options = {}) {
     } else {
       rejected += 1;
       results.push(toPublicTransactionResult(transaction, "rejected", result.error));
+      if (isMissingPaymentCodeResult(result)) {
+        notifyUnmatchedIncomingTransaction(transaction, result.error);
+      }
     }
   }
 
@@ -173,6 +214,10 @@ function normalizeBankTransaction(entry, options = {}) {
   const transactionId = String(pickFirst(entry, ID_KEYS) ?? "").trim();
   const paymentCode = extractPaymentCode(entry, description, options.bankAccounts);
   const bankAccount = matchBankAccount(entry, description, paymentCode, options.bankAccounts);
+  const senderBankName = String(pickFirst(entry, SENDER_BANK_KEYS) ?? "").trim();
+  const senderAccount = String(pickFirst(entry, SENDER_ACCOUNT_KEYS) ?? "").trim();
+  const senderName = String(pickFirst(entry, SENDER_NAME_KEYS) ?? "").trim();
+  const receiverAccount = String(pickFirst(entry, RECEIVER_ACCOUNT_KEYS) ?? "").trim();
 
   return {
     transactionId,
@@ -181,6 +226,10 @@ function normalizeBankTransaction(entry, options = {}) {
     description,
     type,
     bankAccount,
+    senderBankName,
+    senderAccount,
+    senderName,
+    receiverAccount,
     incoming: isIncomingTransaction(type, amount, entry),
     raw: entry,
   };
@@ -303,7 +352,76 @@ function toPublicTransactionResult(transaction, status, reason = "") {
     amount: transaction.amount,
     type: transaction.type,
     description: transaction.description,
+    senderBankName: transaction.senderBankName,
+    senderAccount: transaction.senderAccount,
+    senderName: transaction.senderName,
+    receiverAccount: transaction.receiverAccount,
   };
+}
+
+function notifyUnmatchedIncomingTransaction(transaction, reason) {
+  if (!transaction?.incoming) return;
+  if (!Number.isFinite(transaction.amount) || transaction.amount <= 0) return;
+
+  const key = unmatchedBankTransactionKey(transaction);
+  if (!key || hasRecentUnmatchedBankTransaction(key)) return;
+  rememberUnmatchedBankTransaction(key);
+
+  emitBandoEvent("bank_unmatched_payment", {
+    reason,
+    bankTransaction: {
+      transactionId: transaction.transactionId,
+      paymentCode: transaction.paymentCode,
+      amount: transaction.amount,
+      description: transaction.description,
+      type: transaction.type,
+      bankAccount: transaction.bankAccount,
+      senderBankName: transaction.senderBankName,
+      senderAccount: transaction.senderAccount,
+      senderName: transaction.senderName,
+      receiverAccount: transaction.receiverAccount,
+    },
+  });
+}
+
+function isMissingPaymentCodeResult(result) {
+  const text = String(result?.error || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  return text.includes("khong tim thay ma giao dich");
+}
+
+function unmatchedBankTransactionKey(transaction) {
+  return (
+    transaction.transactionId ||
+    [
+      transaction.amount,
+      transaction.description,
+      transaction.senderBankName,
+      transaction.senderAccount,
+      transaction.receiverAccount,
+    ].map((value) => String(value || "").trim()).join("|")
+  );
+}
+
+function hasRecentUnmatchedBankTransaction(key) {
+  pruneUnmatchedBankTransactionCache();
+  return unmatchedBankTransactionCache.has(key);
+}
+
+function rememberUnmatchedBankTransaction(key) {
+  unmatchedBankTransactionCache.set(key, Date.now());
+  pruneUnmatchedBankTransactionCache();
+}
+
+function pruneUnmatchedBankTransactionCache() {
+  const cutoff = Date.now() - UNMATCHED_BANK_CACHE_MS;
+  for (const [key, createdAt] of unmatchedBankTransactionCache.entries()) {
+    if (createdAt < cutoff) unmatchedBankTransactionCache.delete(key);
+  }
+  while (unmatchedBankTransactionCache.size > 1000) {
+    const firstKey = unmatchedBankTransactionCache.keys().next().value;
+    if (!firstKey) break;
+    unmatchedBankTransactionCache.delete(firstKey);
+  }
 }
 
 function isIncomingTransaction(type, amount, entry) {
