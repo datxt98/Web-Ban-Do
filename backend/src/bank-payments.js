@@ -123,6 +123,14 @@ export async function handleBankPaymentPayload(payload, options = {}) {
       paymentCode: transaction.paymentCode,
       amount: transaction.amount,
       note: buildBankNote(transaction),
+      bankTransaction: {
+        transactionId: transaction.transactionId,
+        paymentCode: transaction.paymentCode,
+        amount: transaction.amount,
+        description: transaction.description,
+        type: transaction.type,
+        bankAccount: transaction.bankAccount,
+      },
     });
 
     if (result.ok) {
@@ -164,6 +172,7 @@ function normalizeBankTransaction(entry, options = {}) {
   const type = String(pickFirst(entry, TYPE_KEYS) ?? "").trim();
   const transactionId = String(pickFirst(entry, ID_KEYS) ?? "").trim();
   const paymentCode = extractPaymentCode(entry, description, options.bankAccounts);
+  const bankAccount = matchBankAccount(entry, description, paymentCode, options.bankAccounts);
 
   return {
     transactionId,
@@ -171,6 +180,7 @@ function normalizeBankTransaction(entry, options = {}) {
     amount,
     description,
     type,
+    bankAccount,
     incoming: isIncomingTransaction(type, amount, entry),
     raw: entry,
   };
@@ -230,6 +240,41 @@ function extractPrefixedPaymentCode(text, bankAccounts = []) {
   }
 
   return "";
+}
+
+function matchBankAccount(entry, description, paymentCode, bankAccounts = []) {
+  const accounts = Array.isArray(bankAccounts) ? bankAccounts.filter(Boolean) : [];
+  if (accounts.length === 0) return null;
+
+  const source = `${description || ""} ${paymentCode || ""}`.toUpperCase();
+  for (const account of accounts) {
+    const prefix = normalizePaymentPrefix(account?.paymentPrefix);
+    if (prefix && source.includes(prefix)) return publicBankAccount(account);
+  }
+
+  const accountText = [
+    pickFirst(entry, ["accountNo", "accountNumber", "beneficiaryAccount", "toAccount", "receiverAccount"]),
+    description,
+  ].map((value) => String(value || "")).join(" ");
+  for (const account of accounts) {
+    const accountNumber = String(account.accountNumber || "").trim();
+    if (accountNumber && accountText.includes(accountNumber)) return publicBankAccount(account);
+  }
+
+  const activeAccounts = accounts.filter((account) => account.active !== false);
+  if (activeAccounts.length === 1) return publicBankAccount(activeAccounts[0]);
+  if (accounts.length === 1) return publicBankAccount(accounts[0]);
+  return null;
+}
+
+function publicBankAccount(account) {
+  if (!account) return null;
+  return {
+    bankName: String(account.bankName || ""),
+    bankCode: String(account.bankCode || ""),
+    accountNumber: String(account.accountNumber || ""),
+    accountName: String(account.accountName || ""),
+  };
 }
 
 function buildDescriptionText(entry) {

@@ -50,6 +50,43 @@ export async function listBandoStateMysql(args = {}) {
   });
 }
 
+export async function getBandoRevenueStatsMysql(args = {}) {
+  return withBandoConnection(async (conn) => {
+    const fromIso = String(args.fromIso || "").trim();
+    const toIso = String(args.toIso || "").trim();
+    if (!fromIso || !toIso) return { ok: false, error: "Thieu khoang thoi gian thong ke." };
+
+    const [sellRows] = await conn.query(
+      `SELECT
+         COUNT(*) AS total_orders,
+         COALESCE(SUM(total_amount), 0) AS total_amount,
+         COALESCE(SUM(CASE WHEN item_code = ? THEN 1 ELSE 0 END), 0) AS coin_orders,
+         COALESCE(SUM(CASE WHEN item_code = ? THEN total_amount ELSE 0 END), 0) AS coin_amount,
+         COALESCE(SUM(CASE WHEN item_code <> ? THEN 1 ELSE 0 END), 0) AS item_orders,
+         COALESCE(SUM(CASE WHEN item_code <> ? THEN total_amount ELSE 0 END), 0) AS item_amount
+       FROM bando_orders
+       WHERE status IN ('paid', 'completed')
+         AND COALESCE(NULLIF(paid_at, ''), created_at) >= ?
+         AND COALESCE(NULLIF(paid_at, ''), created_at) < ?`,
+      [COIN_ITEM_CODE, COIN_ITEM_CODE, COIN_ITEM_CODE, COIN_ITEM_CODE, fromIso, toIso],
+    );
+
+    const [buyRows] = await conn.query(
+      `SELECT
+         COUNT(*) AS coin_orders,
+         COALESCE(SUM(total_amount), 0) AS coin_amount
+       FROM bando_coin_trades
+       WHERE type = 'sell_xu'
+         AND status IN ('awaiting_payout_info', 'completed', 'payout_completed')
+         AND COALESCE(NULLIF(completed_at, ''), NULLIF(paid_at, ''), created_at) >= ?
+         AND COALESCE(NULLIF(completed_at, ''), NULLIF(paid_at, ''), created_at) < ?`,
+      [fromIso, toIso],
+    );
+
+    return buildRevenueStatsResult(fromIso, toIso, sellRows[0], buyRows[0]);
+  });
+}
+
 export async function insertBandoOrderMysql(order) {
   return withBandoConnection(async (conn) => {
     await conn.execute(
@@ -1585,6 +1622,33 @@ function mapTransaction(row) {
     status: String(row.status ?? "rejected"),
     note: String(row.note ?? ""),
     createdAt: String(row.created_at ?? ""),
+  };
+}
+
+function buildRevenueStatsResult(fromIso, toIso, sellRow = {}, buyRow = {}) {
+  const sell = {
+    totalOrders: toNumber(sellRow.total_orders, 0),
+    totalAmount: toNumber(sellRow.total_amount, 0),
+    coinOrders: toNumber(sellRow.coin_orders, 0),
+    coinAmount: toNumber(sellRow.coin_amount, 0),
+    itemOrders: toNumber(sellRow.item_orders, 0),
+    itemAmount: toNumber(sellRow.item_amount, 0),
+  };
+  const buy = {
+    totalOrders: toNumber(buyRow.coin_orders, 0),
+    totalAmount: toNumber(buyRow.coin_amount, 0),
+    coinOrders: toNumber(buyRow.coin_orders, 0),
+    coinAmount: toNumber(buyRow.coin_amount, 0),
+  };
+
+  return {
+    ok: true,
+    fromIso,
+    toIso,
+    sell,
+    buy,
+    netAmount: sell.totalAmount - buy.totalAmount,
+    storage: "mysql",
   };
 }
 
