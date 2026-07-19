@@ -297,6 +297,9 @@ function parseReplyDecision(text, repliedMessage) {
 }
 
 function parseCommand(text) {
+  const dayCommand = parseDayStatsCommand(text);
+  if (dayCommand) return dayCommand;
+
   const monthCommand = parseMonthStatsCommand(text);
   if (monthCommand) return monthCommand;
 
@@ -314,6 +317,9 @@ function parseCommand(text) {
 
 async function runCommand(command, from) {
   if (command.action === "info") return command.message || buildHelpText();
+  if (command.action === "day_stats") {
+    return buildStatsSection(`THỐNG KÊ NGÀY ${command.day}/${command.month}/${command.year}`, vietnamDateRange(command.year, command.month, command.day, 1));
+  }
   if (command.action === "month_stats") {
     return buildStatsSection(`THỐNG KÊ THÁNG ${command.month}/${command.year}`, vietnamMonthRange(command.month, command.year));
   }
@@ -439,6 +445,28 @@ function parseMonthStatsCommand(text) {
   const month = Number(match[1]);
   if (!Number.isInteger(month) || month < 1 || month > 12) return null;
   return { action: "month_stats", month, year: vietnamNowParts().year };
+}
+
+function parseDayStatsCommand(text) {
+  const normalized = stripVietnameseMarks(text).toLowerCase().replace(/@[\w_]+/g, "").replace(/\s+/g, " ").trim();
+  const match = normalized.match(/^\/?ngay\s*(\d{1,2})(?:[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?)?$/);
+  if (!match) return null;
+
+  const now = vietnamNowParts();
+  const day = Number(match[1]);
+  const month = match[2] ? Number(match[2]) : now.month;
+  let year = match[3] ? Number(match[3]) : now.year;
+  if (year > 0 && year < 100) year += 2000;
+
+  if (!isValidVietnamDate(day, month, year)) return null;
+  return { action: "day_stats", day, month, year };
+}
+
+function isValidVietnamDate(day, month, year) {
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) return false;
+  if (!Number.isInteger(month) || month < 1 || month > 12) return false;
+  if (!Number.isInteger(day) || day < 1) return false;
+  return day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
 function normalizeDecision(text) {
