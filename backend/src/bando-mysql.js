@@ -87,6 +87,45 @@ export async function getBandoRevenueStatsMysql(args = {}) {
   });
 }
 
+export async function getLatestBandoEventIdMysql() {
+  return withBandoConnection(async (conn) => {
+    const [rows] = await conn.query("SELECT COALESCE(MAX(id), 0) AS id FROM bando_events");
+    return { ok: true, id: toNumber(rows[0]?.id, 0), storage: "mysql" };
+  });
+}
+
+export async function listBandoTelegramCreatedEventsMysql(args = {}) {
+  return withBandoConnection(async (conn) => {
+    const afterId = Math.max(0, Math.trunc(Number(args.afterId) || 0));
+    const limit = Math.min(100, Math.max(1, Math.trunc(Number(args.limit) || 30)));
+    const [rows] = await conn.query(
+      `SELECT *
+       FROM bando_events
+       WHERE id > ?
+         AND type IN ('order_created', 'coin_buy_created', 'coin_sell_requested')
+       ORDER BY id ASC
+       LIMIT ?`,
+      [afterId, limit],
+    );
+
+    let lastEventId = afterId;
+    const events = [];
+    for (const row of rows) {
+      const event = mapEvent(row);
+      lastEventId = Math.max(lastEventId, event.id);
+      const built = await buildTelegramCreatedEvent(conn, event);
+      if (built) events.push(built);
+    }
+
+    return {
+      ok: true,
+      lastEventId,
+      events,
+      storage: "mysql",
+    };
+  });
+}
+
 export async function insertBandoOrderMysql(order) {
   return withBandoConnection(async (conn) => {
     await conn.execute(
@@ -1650,6 +1689,86 @@ function buildRevenueStatsResult(fromIso, toIso, sellRow = {}, buyRow = {}) {
     netAmount: sell.totalAmount - buy.totalAmount,
     storage: "mysql",
   };
+}
+
+async function buildTelegramCreatedEvent(conn, event) {
+  const orderCode = String(event.orderCode || "").trim().toUpperCase();
+  if (!orderCode) return null;
+
+  if (event.type === "order_created") {
+    const order = await findOrderForTelegram(conn, orderCode);
+    if (!order || order.itemCode === COIN_ITEM_CODE) return null;
+    return {
+      id: event.id,
+      type: "item_order_created",
+      payload: {
+        order,
+        bankAccount: await findBankAccountForPaymentCode(conn, order.paymentCode),
+      },
+      createdAt: event.createdAt,
+    };
+  }
+
+  if (event.type === "coin_buy_created") {
+    const order = await findOrderForTelegram(conn, orderCode);
+    const coinTrade = await findCoinTradeForTelegram(conn, orderCode);
+    if (!order || !coinTrade) return null;
+    return {
+      id: event.id,
+      type: "coin_buy_order_created",
+      payload: {
+        order,
+        coinTrade,
+        bankAccount: await findBankAccountForPaymentCode(conn, order.paymentCode),
+      },
+      createdAt: event.createdAt,
+    };
+  }
+
+  if (event.type === "coin_sell_requested") {
+    const coinTrade = await findCoinTradeForTelegram(conn, orderCode);
+    if (!coinTrade) return null;
+    return {
+      id: event.id,
+      type: "coin_sell_request_created",
+      payload: { coinTrade },
+      createdAt: event.createdAt,
+    };
+  }
+
+  return null;
+}
+
+async function findOrderForTelegram(conn, orderCode) {
+  const [rows] = await conn.query(
+    `SELECT o.*, i.item_id
+     FROM bando_orders o
+     LEFT JOIN bando_items i ON i.code = o.item_code
+     WHERE o.order_code = ?
+     LIMIT 1`,
+    [orderCode],
+  );
+  return rows[0] ? mapOrder(rows[0]) : null;
+}
+
+async function findCoinTradeForTelegram(conn, orderCode) {
+  const [rows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [orderCode]);
+  return rows[0] ? mapCoinTrade(rows[0]) : null;
+}
+
+async function findBankAccountForPaymentCode(conn, paymentCode) {
+  const code = String(paymentCode || "").trim().toUpperCase();
+  const [rows] = await conn.query("SELECT * FROM bando_bank_accounts ORDER BY active DESC, id DESC");
+  if (rows.length === 0) return null;
+
+  const accounts = rows.map(mapBankAccount);
+  const byPrefix = accounts.find((account) => {
+    const prefix = normalizePaymentPrefix(account.paymentPrefix);
+    return prefix && code.startsWith(prefix);
+  });
+  if (byPrefix) return byPrefix;
+
+  return accounts.find((account) => account.active) || accounts[0] || null;
 }
 
 function mapEvent(row) {

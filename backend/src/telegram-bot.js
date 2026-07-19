@@ -1,5 +1,6 @@
 import { approveBandoOrder, approveCoinTradePayout, cancelBandoRecord, getBandoRevenueStats } from "./bando-storage.js";
 import { subscribeBandoEvents } from "./bando-events.js";
+import { getLatestBandoEventIdMysql, listBandoTelegramCreatedEventsMysql } from "./bando-mysql.js";
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
@@ -51,16 +52,22 @@ export function startTelegramBot() {
   const chatIds = splitList(process.env.BANDO_TELEGRAM_CHAT_IDS);
   const allowedUserIds = splitList(process.env.BANDO_TELEGRAM_ALLOWED_USER_IDS);
   const pollMs = readIntegerEnv("BANDO_TELEGRAM_POLL_MS", 2500, 1000, 60000);
+  const createdEventPollMs = readIntegerEnv("BANDO_TELEGRAM_ORDER_POLL_MS", Math.max(5000, pollMs), 1000, 60000);
   const ctx = {
     token,
     chatIds,
     allowedUserIds,
     offset: 0,
     polling: false,
+    createdEventPolling: false,
+    createdEventCursorId: 0,
+    recentEventKeys: new Map(),
   };
 
   const unsubscribe = subscribeBandoEvents((event) => notifyTelegramEvent(ctx, event));
   const timer = setInterval(() => pollTelegram(ctx), pollMs);
+  const createdEventTimer = setInterval(() => pollBandoCreatedEvents(ctx), createdEventPollMs);
+  initializeBandoCreatedEventCursor(ctx).finally(() => pollBandoCreatedEvents(ctx));
   deleteTelegramWebhook(ctx).finally(() => pollTelegram(ctx));
 
   console.log(`[bando:telegram] Bot Telegram dang chay polling moi ${pollMs}ms.`);
@@ -71,6 +78,7 @@ export function startTelegramBot() {
   return {
     stop() {
       clearInterval(timer);
+      clearInterval(createdEventTimer);
       unsubscribe();
     },
   };
@@ -78,6 +86,9 @@ export function startTelegramBot() {
 
 async function notifyTelegramEvent(ctx, event) {
   if (!ctx.chatIds.length) return;
+  const eventKey = telegramEventDedupKey(event);
+  if (eventKey && hasRecentTelegramEvent(ctx, eventKey)) return;
+
   const message = await buildTelegramEventMessage(event);
   if (message) await sendToAdminChats(ctx, message);
   const payoutQr = await buildPayoutVietQrNotification(event).catch((error) => {
@@ -85,6 +96,36 @@ async function notifyTelegramEvent(ctx, event) {
     return null;
   });
   if (payoutQr) await sendPhotoToAdminChats(ctx, payoutQr);
+  if ((message || payoutQr) && eventKey) rememberTelegramEvent(ctx, eventKey);
+}
+
+async function initializeBandoCreatedEventCursor(ctx) {
+  const result = await getLatestBandoEventIdMysql();
+  if (result?.ok) {
+    ctx.createdEventCursorId = Math.max(ctx.createdEventCursorId || 0, Number(result.id) || 0);
+  }
+}
+
+async function pollBandoCreatedEvents(ctx) {
+  if (!ctx.chatIds.length || ctx.createdEventPolling) return;
+  ctx.createdEventPolling = true;
+  try {
+    const result = await listBandoTelegramCreatedEventsMysql({
+      afterId: ctx.createdEventCursorId,
+      limit: 30,
+    });
+    if (!result?.ok) return;
+
+    for (const event of result.events ?? []) {
+      await notifyTelegramEvent(ctx, event);
+    }
+
+    ctx.createdEventCursorId = Math.max(ctx.createdEventCursorId || 0, Number(result.lastEventId) || 0);
+  } catch (error) {
+    console.error("[bando:telegram] poll don moi tu DB loi:", error instanceof Error ? error.message : error);
+  } finally {
+    ctx.createdEventPolling = false;
+  }
 }
 
 async function buildTelegramEventMessage(event) {
@@ -683,6 +724,36 @@ function extractBandoCode(text) {
     if (match) return match[1].toUpperCase();
   }
   return "";
+}
+
+function telegramEventDedupKey(event) {
+  const orderCode = String(event.payload?.order?.orderCode || event.payload?.coinTrade?.orderCode || "").trim().toUpperCase();
+  if (!orderCode) return "";
+  return `${event.type}:${orderCode}`;
+}
+
+function hasRecentTelegramEvent(ctx, eventKey) {
+  pruneRecentTelegramEvents(ctx);
+  return ctx.recentEventKeys?.has(eventKey);
+}
+
+function rememberTelegramEvent(ctx, eventKey) {
+  if (!ctx.recentEventKeys) ctx.recentEventKeys = new Map();
+  ctx.recentEventKeys.set(eventKey, Date.now());
+  pruneRecentTelegramEvents(ctx);
+}
+
+function pruneRecentTelegramEvents(ctx) {
+  if (!ctx.recentEventKeys) return;
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [key, createdAt] of ctx.recentEventKeys.entries()) {
+    if (createdAt < cutoff) ctx.recentEventKeys.delete(key);
+  }
+  while (ctx.recentEventKeys.size > 300) {
+    const firstKey = ctx.recentEventKeys.keys().next().value;
+    if (!firstKey) break;
+    ctx.recentEventKeys.delete(firstKey);
+  }
 }
 
 function vietnamTodayRange() {
