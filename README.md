@@ -92,10 +92,13 @@ Khi khách bán xu cho BOT và đã gửi đúng thông tin ngân hàng, Telegra
 Cấu hình tùy chọn trong `.env`:
 
 ```text
+BANDO_TELEGRAM_ORDER_POLL_MS=5000
 BANDO_VIETQR_ENABLED=1
 BANDO_VIETQR_TEMPLATE=compact2
 BANDO_VIETQR_FORMAT=png
 ```
+
+`BANDO_TELEGRAM_ORDER_POLL_MS` giúp Telegram trên VPS quét DB để bắt đơn mới, kể cả khi đơn được tạo từ một máy/backend khác nhưng dùng chung DB `bando`.
 
 QR dùng ngân hàng, số tài khoản, chủ tài khoản của khách; số tiền là số tiền shop cần trả cho phiếu bán xu; nội dung chuyển khoản là `TRA XU <MÃ_PHIẾU>`.
 
