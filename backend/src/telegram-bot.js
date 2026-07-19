@@ -3,6 +3,41 @@ import { subscribeBandoEvents } from "./bando-events.js";
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
+const VIETQR_BANKS_API_URL = "https://api.vietqr.io/v2/banks";
+const VIETQR_BANK_CACHE_MS = 24 * 60 * 60 * 1000;
+const VIETQR_BANK_FALLBACKS = new Map([
+  ["abb", "970425"],
+  ["abbank", "970425"],
+  ["acb", "970416"],
+  ["bidv", "970418"],
+  ["ctg", "970415"],
+  ["icb", "970415"],
+  ["mb", "970422"],
+  ["mbbank", "970422"],
+  ["m b bank", "970422"],
+  ["msb", "970426"],
+  ["ocb", "970448"],
+  ["sacombank", "970403"],
+  ["scb", "970429"],
+  ["seabank", "970440"],
+  ["shb", "970443"],
+  ["shinhan", "970424"],
+  ["shinhanbank", "970424"],
+  ["techcombank", "970407"],
+  ["tcb", "970407"],
+  ["tpb", "970423"],
+  ["tpbank", "970423"],
+  ["vib", "970441"],
+  ["vietcombank", "970436"],
+  ["vietinbank", "970415"],
+  ["vpbank", "970432"],
+  ["vpb", "970432"],
+]);
+
+let vietQrBankCache = {
+  expiresAt: 0,
+  banks: [],
+};
 
 export function startTelegramBot() {
   if (!isEnabled(process.env.BANDO_TELEGRAM_ENABLED)) return null;
@@ -44,8 +79,12 @@ export function startTelegramBot() {
 async function notifyTelegramEvent(ctx, event) {
   if (!ctx.chatIds.length) return;
   const message = await buildTelegramEventMessage(event);
-  if (!message) return;
-  await sendToAdminChats(ctx, message);
+  if (message) await sendToAdminChats(ctx, message);
+  const payoutQr = await buildPayoutVietQrNotification(event).catch((error) => {
+    console.warn("[bando:telegram] tao VietQR loi:", error instanceof Error ? error.message : error);
+    return null;
+  });
+  if (payoutQr) await sendPhotoToAdminChats(ctx, payoutQr);
 }
 
 async function buildTelegramEventMessage(event) {
@@ -215,6 +254,132 @@ function buildPaymentConfirmedMessage(order, bankTransaction, note) {
   }
 
   return lines.join("\n");
+}
+
+async function buildPayoutVietQrNotification(event) {
+  if (!isVietQrEnabled()) return null;
+  if (event.type !== "coin_payout_info_saved") return null;
+
+  const trade = event.payload?.coinTrade;
+  if (!trade?.bankName || !trade?.accountNumber || !trade?.accountName || !trade?.totalAmount) return null;
+
+  const bankId = await resolveVietQrBankId(trade.bankName);
+  const accountNo = normalizeVietQrAccountNo(trade.accountNumber);
+  const accountName = normalizeVietQrText(trade.accountName, 50);
+  const amount = normalizeVietQrAmount(trade.totalAmount);
+  const addInfo = normalizeVietQrText(`TRA XU ${trade.orderCode}`, 50);
+
+  if (!bankId || !accountNo || !accountName || !amount || !addInfo) return null;
+
+  const template = normalizeVietQrTemplate(process.env.BANDO_VIETQR_TEMPLATE);
+  const imageFormat = normalizeVietQrImageFormat(process.env.BANDO_VIETQR_FORMAT);
+  const params = new URLSearchParams({
+    amount: String(amount),
+    addInfo,
+    accountName,
+  });
+  const photoUrl = `https://img.vietqr.io/image/${encodeURIComponent(bankId)}-${encodeURIComponent(accountNo)}-${template}.${imageFormat}?${params.toString()}`;
+  const caption = [
+    "<b>QR TRẢ TIỀN CHO KHÁCH</b>",
+    "",
+    `Phiếu: <b>${h(trade.orderCode)}</b>`,
+    "Loại: coin_payout",
+    `Khách: ${h(trade.characterName)} (${h(trade.serverName)})`,
+    `Số tiền: <b>${formatVnd(amount)}</b>`,
+    `Ngân hàng: ${h(trade.bankName)} (${h(bankId)})`,
+    `STK: ${h(accountNo)}`,
+    `Chủ TK: ${h(accountName)}`,
+    `Nội dung: ${h(addInfo)}`,
+    "Quét QR để trả tiền, sau đó reply <b>ok</b> vào tin này hoặc tin thông tin nhận tiền.",
+  ].join("\n");
+
+  return { photoUrl, caption };
+}
+
+function isVietQrEnabled() {
+  const raw = process.env.BANDO_VIETQR_ENABLED;
+  if (raw == null || String(raw).trim() === "") return true;
+  return isEnabled(raw);
+}
+
+async function resolveVietQrBankId(bankName) {
+  const raw = String(bankName || "").trim();
+  const key = normalizeVietQrBankKey(raw);
+  if (!key) return "";
+  if (/^\d{6}$/.test(key)) return key;
+
+  let banks = [];
+  try {
+    banks = await listVietQrBanks();
+  } catch (error) {
+    console.warn("[bando:telegram] khong tai duoc danh sach ngan hang VietQR:", error instanceof Error ? error.message : error);
+  }
+  const matched = banks.find((bank) => {
+    const candidates = [bank.bin, bank.code, bank.shortName, bank.short_name, bank.name].map(normalizeVietQrBankKey);
+    return candidates.includes(key);
+  });
+  if (matched?.bin) return String(matched.bin).trim();
+
+  const looseMatch = banks.find((bank) => {
+    const candidates = [bank.code, bank.shortName, bank.short_name].map(normalizeVietQrBankKey);
+    return candidates.some((candidate) => candidate && (candidate.includes(key) || key.includes(candidate)));
+  });
+  if (looseMatch?.bin) return String(looseMatch.bin).trim();
+
+  return VIETQR_BANK_FALLBACKS.get(key) || key.replace(/[^a-z0-9]/g, "");
+}
+
+async function listVietQrBanks() {
+  const now = Date.now();
+  if (vietQrBankCache.expiresAt > now && Array.isArray(vietQrBankCache.banks)) {
+    return vietQrBankCache.banks;
+  }
+
+  const response = await fetch(VIETQR_BANKS_API_URL);
+  if (!response.ok) throw new Error(`VietQR banks HTTP ${response.status}`);
+  const payload = await response.json().catch(() => null);
+  const banks = Array.isArray(payload?.data) ? payload.data : [];
+  vietQrBankCache = {
+    expiresAt: now + VIETQR_BANK_CACHE_MS,
+    banks,
+  };
+  return banks;
+}
+
+function normalizeVietQrBankKey(value) {
+  return stripVietnameseMarks(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeVietQrAccountNo(value) {
+  return String(value || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 19);
+}
+
+function normalizeVietQrAmount(value) {
+  const amount = Math.trunc(Number(value) || 0);
+  if (amount <= 0) return 0;
+  return Number(String(amount).slice(0, 13));
+}
+
+function normalizeVietQrText(value, maxLength) {
+  return stripVietnameseMarks(value)
+    .toUpperCase()
+    .replace(/[^A-Z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength)
+    .trim();
+}
+
+function normalizeVietQrTemplate(value) {
+  const template = String(value || "compact2").trim().toLowerCase();
+  return ["compact2", "compact", "qr_only", "print", "loax"].includes(template) ? template : "compact2";
+}
+
+function normalizeVietQrImageFormat(value) {
+  const imageFormat = String(value || "png").trim().toLowerCase();
+  return ["png", "jpg", "jpeg"].includes(imageFormat) ? imageFormat : "png";
 }
 
 async function pollTelegram(ctx) {
@@ -392,6 +557,21 @@ async function sendToAdminChats(ctx, text) {
   }
 }
 
+async function sendPhotoToAdminChats(ctx, photo) {
+  for (const chatId of ctx.chatIds) {
+    try {
+      await sendTelegramPhoto(ctx, chatId, photo.photoUrl, photo.caption);
+    } catch (error) {
+      console.error("[bando:telegram] gui VietQR loi:", error instanceof Error ? error.message : error);
+      try {
+        await sendTelegramMessage(ctx, chatId, `${photo.caption}\n\nLink QR: ${h(photo.photoUrl)}`);
+      } catch (fallbackError) {
+        console.error("[bando:telegram] gui link VietQR loi:", fallbackError instanceof Error ? fallbackError.message : fallbackError);
+      }
+    }
+  }
+}
+
 async function sendTelegramMessage(ctx, chatId, text, options = null) {
   const payload = {
     chat_id: chatId,
@@ -403,6 +583,15 @@ async function sendTelegramMessage(ctx, chatId, text, options = null) {
     payload.reply_to_message_id = options.reply_to_message_id;
   }
   await telegramApi(ctx, "sendMessage", payload);
+}
+
+async function sendTelegramPhoto(ctx, chatId, photoUrl, caption) {
+  await telegramApi(ctx, "sendPhoto", {
+    chat_id: chatId,
+    photo: photoUrl,
+    caption,
+    parse_mode: "HTML",
+  });
 }
 
 async function deleteTelegramWebhook(ctx) {
