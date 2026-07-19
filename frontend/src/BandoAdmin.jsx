@@ -29,6 +29,7 @@ const gameOptionsDefault = ["Ninja Mobile", "Ninja 2D"];
 const defaultGameName = "Ninja Mobile";
 const authStorageKey = "bando.adminToken";
 let authTokenMemory = readStoredAuthToken();
+const defaultWebBaseUrl = getPublicBrowserOrigin() || "http://localhost:5001";
 
 const emptyState = {
   items: [],
@@ -44,10 +45,11 @@ const emptyState = {
 const emptyBotConfig = {
   enabled: true,
   characterName: "ADMIN",
-  webBaseUrl: "http://localhost:5001",
+  webBaseUrl: defaultWebBaseUrl,
   botToken: "",
   gameName: defaultGameName,
   serverName: "nso-local",
+  custom: false,
   replyPrivate: true,
   inventorySyncMs: 15000,
   adminNames: [],
@@ -103,6 +105,31 @@ function setStoredAuthToken(token) {
   } catch {
     // Storage can be unavailable in some browser contexts.
   }
+}
+
+function getPublicBrowserOrigin() {
+  if (typeof window === "undefined" || !window.location) return "";
+  const origin = String(window.location.origin || "").trim();
+  const hostname = String(window.location.hostname || "").trim().toLowerCase();
+  if (!origin || hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") return "";
+  return origin;
+}
+
+function isLocalWebBaseUrl(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return (
+    text.startsWith("http://localhost") ||
+    text.startsWith("https://localhost") ||
+    text.startsWith("http://127.0.0.1") ||
+    text.startsWith("https://127.0.0.1")
+  );
+}
+
+function normalizeWebBaseUrl(value) {
+  const text = String(value || "").trim();
+  const publicOrigin = getPublicBrowserOrigin();
+  if (publicOrigin && (!text || isLocalWebBaseUrl(text))) return publicOrigin;
+  return text || defaultWebBaseUrl;
 }
 
 async function jsonFetch(url, init = {}) {
@@ -224,6 +251,8 @@ function mergeBotConfig(config) {
     },
     serverProfiles: [],
   };
+  merged.webBaseUrl = normalizeWebBaseUrl(merged.webBaseUrl);
+  merged.custom = Boolean(config?.custom);
   merged.serverProfiles = normalizeServerProfiles(config);
   return merged;
 }
@@ -258,7 +287,9 @@ function normalizeServerProfiles(config) {
         },
       },
       serverProfiles: [],
+      custom: Boolean(profile.custom),
     };
+    normalized.webBaseUrl = normalizeWebBaseUrl(normalized.webBaseUrl);
     normalized.serverName = String(normalized.serverName || "").trim();
     normalized.gameName = String(normalized.gameName || defaultGameName).trim() || defaultGameName;
     if (!normalized.serverName) continue;
@@ -286,6 +317,25 @@ function profileKey(gameName, serverName) {
   return `${gameKey(gameName)}|${serverKey(serverName)}`;
 }
 
+function findServerProfile(config, gameName, serverName) {
+  const normalized = mergeBotConfig(config);
+  const key = profileKey(gameName || normalized.gameName, serverName || normalized.serverName);
+  if (profileKey(normalized.gameName, normalized.serverName) === key) return normalized;
+  return normalized.serverProfiles.find((entry) => profileKey(entry.gameName, entry.serverName) === key) || null;
+}
+
+function isGameServerConfigured(gameServers, gameName, serverName) {
+  const key = profileKey(gameName, serverName);
+  return (gameServers ?? []).some((server) => profileKey(server.gameName, server.name) === key);
+}
+
+function isKnownServer(config, gameServers, gameName, serverName) {
+  if (!serverKey(serverName)) return false;
+  if (isGameServerConfigured(gameServers, gameName, serverName)) return true;
+  const profile = findServerProfile(config, gameName, serverName);
+  return Boolean(profile?.custom);
+}
+
 function serverQuery(gameName, serverName) {
   const params = new URLSearchParams();
   const game = normalizeGameName(gameName);
@@ -296,15 +346,18 @@ function serverQuery(gameName, serverName) {
   return query ? `?${query}` : "";
 }
 
-function configForServer(config, gameName, serverName) {
+function configForServer(config, gameName, serverName, gameServers = []) {
   const normalized = mergeBotConfig(config);
   const key = profileKey(gameName || normalized.gameName, serverName || normalized.serverName);
   const profile = normalized.serverProfiles.find((entry) => profileKey(entry.gameName, entry.serverName) === key);
   if (!profile) {
+    const isRootProfile = profileKey(normalized.gameName, normalized.serverName) === key;
     return mergeBotConfig({
       ...normalized,
       gameName: normalizeGameName(gameName || normalized.gameName),
       serverName: String(serverName || normalized.serverName || emptyBotConfig.serverName).trim(),
+      characterName: isRootProfile ? normalized.characterName : "",
+      custom: !isGameServerConfigured(gameServers, gameName || normalized.gameName, serverName || normalized.serverName),
     });
   }
   return mergeBotConfig({
@@ -312,16 +365,6 @@ function configForServer(config, gameName, serverName) {
     ...profile,
     serverProfiles: normalized.serverProfiles,
   });
-}
-
-function hasServerConfig(config, gameName, serverName) {
-  if (!serverKey(serverName)) return false;
-  const key = profileKey(gameName, serverName);
-  const normalized = mergeBotConfig(config);
-  return (
-    profileKey(normalized.gameName, normalized.serverName) === key ||
-    normalized.serverProfiles.some((profile) => profileKey(profile.gameName, profile.serverName) === key)
-  );
 }
 
 function upsertServerProfile(baseConfig, profileConfig, previousGameName = "", previousServerName = "") {
@@ -440,22 +483,45 @@ export default function BandoAdmin() {
 
   const serverOptions = useMemo(() => {
     const options = new Map();
-    const addOption = (profile) => {
-      if (gameKey(profile?.gameName) !== gameKey(activeGameName)) return;
-      const name = String(profile?.serverName || "").trim();
-      if (!name) return;
-      options.set(profileKey(profile.gameName, name), {
-        gameName: normalizeGameName(profile?.gameName),
-        serverName: name,
-        characterName: String(profile?.characterName || "").trim(),
+    const normalizedConfig = mergeBotConfig(botConfig);
+    (state.gameServers ?? []).forEach((server) => {
+      if (gameKey(server.gameName) !== gameKey(activeGameName)) return;
+      const serverName = String(server.name || "").trim();
+      if (!serverName) return;
+      const profile = findServerProfile(normalizedConfig, server.gameName, serverName);
+      options.set(profileKey(server.gameName, serverName), {
+        gameName: normalizeGameName(server.gameName),
+        serverName,
+        characterName: profile ? String(profile.characterName || "").trim() : "",
+        source: "db",
       });
-    };
-    addOption(botConfig);
-    (botConfig.serverProfiles ?? []).forEach(addOption);
-    addOption(configDraft);
-    (state.gameServers ?? []).forEach((server) => addOption({ ...server, serverName: server.name }));
-    if (activeServerName) addOption({ gameName: activeGameName, serverName: activeServerName });
-    return Array.from(options.values()).sort((a, b) => a.serverName.localeCompare(b.serverName));
+    });
+    (normalizedConfig.serverProfiles ?? []).forEach((profile) => {
+      if (!profile.custom || gameKey(profile.gameName) !== gameKey(activeGameName)) return;
+      const serverName = String(profile.serverName || "").trim();
+      if (!serverName) return;
+      const key = profileKey(profile.gameName, serverName);
+      if (options.has(key)) return;
+      options.set(key, {
+        gameName: normalizeGameName(profile.gameName),
+        serverName,
+        characterName: String(profile.characterName || "").trim(),
+        source: "custom",
+      });
+    });
+    if (activeServerName && isKnownServer(normalizedConfig, state.gameServers, activeGameName, activeServerName)) {
+      const key = profileKey(activeGameName, activeServerName);
+      if (!options.has(key)) {
+        const profile = findServerProfile(normalizedConfig, activeGameName, activeServerName);
+        options.set(key, {
+          gameName: activeGameName,
+          serverName: activeServerName,
+          characterName: profile ? String(profile.characterName || "").trim() : "",
+          source: profile?.custom ? "custom" : "db",
+        });
+      }
+    }
+    return Array.from(options.values());
   }, [activeGameName, activeServerName, botConfig, configDraft, state.gameServers]);
 
   const searchResults = useMemo(() => {
@@ -476,10 +542,13 @@ export default function BandoAdmin() {
 
   function firstServerForGame(config, gameName) {
     const normalized = mergeBotConfig(config);
-    const profiles = [normalized, ...(normalized.serverProfiles ?? [])].filter((profile) => gameKey(profile.gameName) === gameKey(gameName));
-    const profileServer = profiles.find((profile) => String(profile.serverName || "").trim())?.serverName || "";
-    if (profileServer) return profileServer;
-    return (state.gameServers ?? []).find((server) => gameKey(server.gameName) === gameKey(gameName))?.name || "";
+    const dbServer = (state.gameServers ?? []).find((server) => gameKey(server.gameName) === gameKey(gameName))?.name || "";
+    if (dbServer) return dbServer;
+    const customProfile = (normalized.serverProfiles ?? []).find(
+      (profile) => profile.custom && gameKey(profile.gameName) === gameKey(gameName) && String(profile.serverName || "").trim(),
+    );
+    if (customProfile) return customProfile.serverName;
+    return profileKey(normalized.gameName, normalized.serverName) && gameKey(normalized.gameName) === gameKey(gameName) ? normalized.serverName : "";
   }
 
   async function loadState(
@@ -490,14 +559,20 @@ export default function BandoAdmin() {
     const nextConfig = mergeBotConfig(configPayload.config);
     const selectedGameName = normalizeGameName(gameNameOverride || nextConfig.gameName || defaultGameName);
     let selectedServerName = String(serverNameOverride || "").trim();
-    if (!hasServerConfig(nextConfig, selectedGameName, selectedServerName)) {
-      selectedServerName = firstServerForGame(nextConfig, selectedGameName) || nextConfig.serverName || emptyBotConfig.serverName;
+    let nextState = await jsonFetch(`/api/bando/history${serverQuery(selectedGameName, selectedServerName)}`);
+    if (!isKnownServer(nextConfig, nextState.gameServers, selectedGameName, selectedServerName)) {
+      selectedServerName =
+        (nextState.gameServers ?? []).find((server) => gameKey(server.gameName) === gameKey(selectedGameName))?.name ||
+        firstServerForGame(nextConfig, selectedGameName) ||
+        "";
+      if (selectedServerName) {
+        nextState = await jsonFetch(`/api/bando/history${serverQuery(selectedGameName, selectedServerName)}`);
+      }
     }
     rememberActiveSelection(selectedGameName, selectedServerName);
-    const nextState = await jsonFetch(`/api/bando/history${serverQuery(selectedGameName, selectedServerName)}`);
     setState(nextState);
     setBotConfig(nextConfig);
-    setConfigDraft(configForServer(nextConfig, selectedGameName, selectedServerName));
+    setConfigDraft(configForServer(nextConfig, selectedGameName, selectedServerName, nextState.gameServers));
   }
 
   async function bootAuth() {
@@ -676,7 +751,7 @@ export default function BandoAdmin() {
     const selectedGameName = normalizeGameName(gameName);
     const selectedServerName = firstServerForGame(botConfig, selectedGameName) || activeServerName || emptyBotConfig.serverName;
     rememberActiveSelection(selectedGameName, selectedServerName);
-    setConfigDraft(configForServer(botConfig, selectedGameName, selectedServerName));
+    setConfigDraft(configForServer(botConfig, selectedGameName, selectedServerName, state.gameServers));
     void loadState(selectedGameName, selectedServerName).catch((error) => {
       setMessage({
         tone: "error",
@@ -688,7 +763,7 @@ export default function BandoAdmin() {
   function selectServer(serverName) {
     const selectedServerName = String(serverName || "").trim() || emptyBotConfig.serverName;
     rememberActiveSelection(activeGameName, selectedServerName);
-    setConfigDraft(configForServer(botConfig, activeGameName, selectedServerName));
+    setConfigDraft(configForServer(botConfig, activeGameName, selectedServerName, state.gameServers));
     void loadState(activeGameName, selectedServerName).catch((error) => {
       setMessage({
         tone: "error",
@@ -722,6 +797,7 @@ export default function BandoAdmin() {
       serverName: nextServerName,
       characterName: "",
       enabled: true,
+      custom: true,
       serverProfiles: botConfig.serverProfiles ?? [],
     });
     rememberActiveSelection(activeGameName, nextServerName);
@@ -773,10 +849,11 @@ export default function BandoAdmin() {
     const body = {
       ...configDraft,
       characterName: configDraft.characterName.trim(),
-      webBaseUrl: configDraft.webBaseUrl.trim(),
+      webBaseUrl: normalizeWebBaseUrl(configDraft.webBaseUrl),
       botToken: configDraft.botToken.trim(),
       gameName: normalizeGameName(configDraft.gameName),
       serverName: configDraft.serverName.trim(),
+      custom: !isGameServerConfigured(state.gameServers, configDraft.gameName, configDraft.serverName),
       inventorySyncMs: numberValue(configDraft.inventorySyncMs, 15000),
       adminNames: Array.isArray(configDraft.adminNames) ? configDraft.adminNames : [],
       stand: {
@@ -1235,7 +1312,7 @@ export default function BandoAdmin() {
                 </label>
                 <label>
                   <span>Game</span>
-                  <select value={configDraft.gameName || defaultGameName} onChange={(event) => updateConfig({ gameName: event.target.value })}>
+                  <select value={configDraft.gameName || defaultGameName} onChange={(event) => selectGame(event.target.value)}>
                     {gameOptions.map((gameName) => (
                       <option key={gameName} value={gameName}>
                         {gameName}
@@ -1245,7 +1322,17 @@ export default function BandoAdmin() {
                 </label>
                 <label>
                   <span>Server name</span>
-                  <input value={configDraft.serverName} onChange={(event) => updateConfig({ serverName: event.target.value })} />
+                  {configDraft.custom ? (
+                    <input value={configDraft.serverName} onChange={(event) => updateConfig({ serverName: event.target.value, custom: true })} />
+                  ) : (
+                    <select value={configDraft.serverName} onChange={(event) => selectServer(event.target.value)}>
+                      {serverOptions.map((server) => (
+                        <option key={`${server.gameName}-${server.serverName}`} value={server.serverName}>
+                          {server.serverName}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </label>
                 <label>
                   <span>Bot token</span>

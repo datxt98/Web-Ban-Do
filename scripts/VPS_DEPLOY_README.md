@@ -54,6 +54,7 @@ BANDO_DB_PORT=3306
 BANDO_DB_USER=root
 BANDO_DB_PASS=your-password
 BANDO_DB_NAME=bando
+BANDO_PUBLIC_URL=http://YOUR_PUBLIC_IP:1122
 ```
 
 Keep real API tokens and callback signatures out of Git. Configure bank accounts and signatures from the BANDO admin web after the server is running.

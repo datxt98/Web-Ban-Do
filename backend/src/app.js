@@ -77,14 +77,14 @@ export function createApp(options = {}) {
     res.json(await listBandoState({ gameName: _req.query.gameName, serverName: _req.query.serverName }));
   }));
 
-  app.get("/api/bando/bot/config", authorizeAdmin, asyncHandler(async (_req, res) => {
-    res.json(await getBandoBotConfig());
+  app.get("/api/bando/bot/config", authorizeAdmin, asyncHandler(async (req, res) => {
+    res.json(publicizeBotConfigResponse(req, await getBandoBotConfig()));
   }));
 
   app.patch("/api/bando/bot/config", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await updateBandoBotConfig(req.body);
     if (!result.ok) return res.status(400).json(result);
-    return res.json(result);
+    return res.json(publicizeBotConfigResponse(req, result));
   }));
 
   app.get("/api/bando/prices", authorizeAdmin, asyncHandler(async (_req, res) => {
@@ -284,6 +284,47 @@ export function createApp(options = {}) {
   });
 
   return app;
+}
+
+function publicizeBotConfigResponse(req, result) {
+  const publicBaseUrl = publicBaseUrlFromRequest(req);
+  if (!publicBaseUrl || !result?.config) return result;
+  return {
+    ...result,
+    config: publicizeBotConfig(result.config, publicBaseUrl),
+  };
+}
+
+function publicizeBotConfig(config, publicBaseUrl) {
+  const next = { ...config };
+  if (!next.webBaseUrl || isLocalWebBaseUrl(next.webBaseUrl)) {
+    next.webBaseUrl = publicBaseUrl;
+  }
+  if (Array.isArray(next.serverProfiles)) {
+    next.serverProfiles = next.serverProfiles.map((profile) => publicizeBotConfig(profile, publicBaseUrl));
+  }
+  return next;
+}
+
+function publicBaseUrlFromRequest(req) {
+  const configured = String(process.env.BANDO_PUBLIC_URL || process.env.BANDO_WEB_BASE_URL || "").trim();
+  if (configured) return configured.replace(/\/+$/, "");
+  const host = String(req.get("x-forwarded-host") || req.get("host") || "").split(",")[0].trim();
+  if (!host) return "";
+  const hostname = host.split(":")[0].toLowerCase();
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") return "";
+  const proto = String(req.get("x-forwarded-proto") || req.protocol || "http").split(",")[0].trim() || "http";
+  return `${proto}://${host}`.replace(/\/+$/, "");
+}
+
+function isLocalWebBaseUrl(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return (
+    text.startsWith("http://localhost") ||
+    text.startsWith("https://localhost") ||
+    text.startsWith("http://127.0.0.1") ||
+    text.startsWith("https://127.0.0.1")
+  );
 }
 
 function authorizeBot(req, res, next) {
