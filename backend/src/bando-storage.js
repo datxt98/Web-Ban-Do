@@ -25,6 +25,7 @@ import {
 import {
   approveBandoOrderMysql,
   approveCoinTradePayoutMysql,
+  cancelBandoRecordMysql,
   cancelCoinTradePayoutInfoMysql,
   confirmBotNotificationMysql,
   confirmDeliveryMysql,
@@ -50,6 +51,7 @@ import {
   updateBandoItemMysql,
 } from "./bando-mysql.js";
 import { createAuthToken, createPasswordRecord, verifyAuthToken, verifyPassword } from "./bando-auth.js";
+import { emitBandoEvent } from "./bando-events.js";
 
 const memoryState = {
   items: defaultBandoItems.map((item) => ({ ...item, aliases: [...item.aliases] })),
@@ -425,7 +427,7 @@ export async function createBandoOrderFromChat(args) {
   };
 
   if (state.storage === "mysql" && (await insertBandoOrderMysql(order))) {
-    return {
+    const result = {
       ok: true,
       order,
       reply: buildOrderReply({
@@ -437,13 +439,15 @@ export async function createBandoOrderFromChat(args) {
         bankAccount,
       }),
     };
+    notifyOrderCreated("item_order_created", { order, bankAccount });
+    return result;
   }
 
   order.id = memoryOrderId++;
   memoryState.orders.unshift(order);
   pushMemoryEvent(orderCode, "order_created", `${characterName} tạo đơn ${orderCode} từ chat riêng.`);
 
-  return {
+  const result = {
     ok: true,
     order,
     reply: buildOrderReply({
@@ -455,6 +459,8 @@ export async function createBandoOrderFromChat(args) {
       bankAccount,
     }),
   };
+  notifyOrderCreated("item_order_created", { order, bankAccount });
+  return result;
 }
 
 async function createCoinBuyOrderFromChat(args) {
@@ -514,7 +520,7 @@ async function createCoinBuyOrderFromChat(args) {
 
   if (args.state.storage === "mysql" && (await insertBandoOrderMysql(order))) {
     await insertBandoCoinTradeMysql(coinTrade);
-    return {
+    const result = {
       ok: true,
       order,
       coinTrade,
@@ -526,6 +532,8 @@ async function createCoinBuyOrderFromChat(args) {
         bankAccount,
       }),
     };
+    notifyOrderCreated("coin_buy_order_created", { order, coinTrade, bankAccount });
+    return result;
   }
 
   order.id = memoryOrderId++;
@@ -534,7 +542,7 @@ async function createCoinBuyOrderFromChat(args) {
   memoryState.coinTrades.unshift(coinTrade);
   pushMemoryEvent(orderCode, "coin_buy_created", `${args.characterName} tao don mua ${args.coinAmount} xu.`);
 
-  return {
+  const result = {
     ok: true,
     order,
     coinTrade,
@@ -546,6 +554,8 @@ async function createCoinBuyOrderFromChat(args) {
       bankAccount,
     }),
   };
+  notifyOrderCreated("coin_buy_order_created", { order, coinTrade, bankAccount });
+  return result;
 }
 
 async function createCoinSellRequestFromChat(args) {
@@ -579,22 +589,30 @@ async function createCoinSellRequestFromChat(args) {
   };
 
   if (args.state.storage === "mysql" && (await insertBandoCoinTradeMysql(coinTrade))) {
-    return {
+    const result = {
       ok: true,
       coinTrade,
       reply: buildCoinSellRequestReply(coinTrade),
     };
+    notifyOrderCreated("coin_sell_request_created", { coinTrade });
+    return result;
   }
 
   coinTrade.id = memoryCoinTradeId++;
   memoryState.coinTrades.unshift(coinTrade);
   pushMemoryEvent(orderCode, "coin_sell_requested", `${args.characterName} tao phieu ban ${args.coinAmount} xu cho BOT.`);
 
-  return {
+  const result = {
     ok: true,
     coinTrade,
     reply: buildCoinSellRequestReply(coinTrade),
   };
+  notifyOrderCreated("coin_sell_request_created", { coinTrade });
+  return result;
+}
+
+function notifyOrderCreated(type, payload) {
+  emitBandoEvent(type, payload);
 }
 
 async function saveCoinTradePayoutInfoFromChat(args) {
@@ -705,6 +723,51 @@ export async function approveBandoOrder(args) {
   }
 
   return approveOrderMemory(orderCode, note);
+}
+
+export async function cancelBandoRecord(args) {
+  const code = String(args.orderCode || args.paymentCode || args.code || "").trim().toUpperCase();
+  const note = String(args.note || "").trim();
+  if (!code) {
+    return { ok: false, error: "Thieu ma don." };
+  }
+
+  const mysqlResult = await cancelBandoRecordMysql(code, note);
+  if (mysqlResult) return mysqlResult;
+
+  const order = memoryState.orders.find((entry) => entry.orderCode === code || entry.paymentCode === code);
+  if (order) {
+    if (order.status === "completed") {
+      return { ok: false, error: "Don nay da giao xong, khong the huy." };
+    }
+    if (order.status !== "cancelled") {
+      order.status = "cancelled";
+      memoryState.transactions.unshift({
+        id: memoryTransactionId++,
+        orderCode: order.orderCode,
+        paymentCode: order.paymentCode,
+        amount: order.totalAmount,
+        status: "cancelled",
+        note: note || "Admin huy don",
+        createdAt: new Date().toISOString(),
+      });
+      const coinTrade = memoryState.coinTrades.find((entry) => entry.orderCode === order.orderCode);
+      if (coinTrade) coinTrade.status = "cancelled";
+      pushMemoryEvent(order.orderCode, "order_cancelled", note || `Admin huy don ${order.orderCode}.`);
+    }
+    return { ok: true, order: { ...order } };
+  }
+
+  const trade = memoryState.coinTrades.find((entry) => entry.orderCode === code);
+  if (!trade) return { ok: false, error: "Khong tim thay don hoac phieu xu." };
+  if (trade.status === "payout_completed") {
+    return { ok: false, error: "Phieu xu da duyet tra tien, khong the huy." };
+  }
+  if (trade.status !== "cancelled") {
+    trade.status = "cancelled";
+    pushMemoryEvent(trade.orderCode, "coin_trade_cancelled", note || `Admin huy phieu xu ${trade.orderCode}.`);
+  }
+  return { ok: true, coinTrade: { ...trade } };
 }
 
 export async function approveCoinTradePayout(args) {
