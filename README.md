@@ -1,94 +1,106 @@
-# Web BANDO VPS Deploy
+# Bảng quản lý bán đồ
 
-This package contains only the production files:
+Web quản lý riêng cho BOT bán đồ Ninja School. Dự án tách thành 2 phần:
 
-- `backend/src`: backend API.
-- `frontend/dist`: built admin web.
-- `package.json`: production dependencies only.
-- `.env.example`: environment template.
+- `frontend`: giao diện quản trị bằng Vite React.
+- `backend`: API xử lý logic, lưu dữ liệu vào MySQL DB `bando`.
 
-## Run On VPS
+## Chạy local
 
 ```powershell
-npm install --omit=dev
-Copy-Item .env.example .env
-notepad .env
-npm start
+cd C:\Users\PC\Desktop\Code\Web-bando
+npm install
+npm run dev
 ```
 
-The app listens on:
+Địa chỉ sử dụng:
+
+- Frontend: http://localhost:3001
+- Backend API: http://localhost:5001
+
+Khi chạy dev, frontend tự proxy `/api` sang backend. BOT có thể trỏ `Web API` về:
 
 ```text
-http://0.0.0.0:1122
+http://localhost:3001
 ```
 
-## Import Game Servers
+## Cấu hình BOT trên web
 
-To import a `game_servers.sql` dump into the `bando.game_servers` table:
+Vào tab `Cấu hình BOT` để quản lý các phần trước đây nằm trong bảng BANDO trong game:
 
-```bash
-npm run db:import-game-servers -- /path/to/game_servers.sql
-```
+- Tên nhân vật BOT được phép auto.
+- Web API, server name, bot token.
+- Map, khu, tọa độ X/Y, sai lệch và chu kỳ đứng cố định.
+- Nội dung auto chat, thời gian giãn cách, chat cộng đồng hoặc thế giới.
+- Chu kỳ đồng bộ hành trang lên web.
 
-The SQL file is not included in Git or in this deploy package because it contains DB passwords and socket keys.
+Trong game chỉ cần đăng nhập đúng nhân vật BOT rồi bấm `BANDO`. Game sẽ gọi web để kiểm tra tên nhân vật. Nếu đúng nhân vật đã cấu hình trên web, BOT tự bật và áp dụng cấu hình web.
 
-Bank callback URL:
+## Dữ liệu
+
+Backend đọc cấu hình MySQL từ:
 
 ```text
-http://YOUR_PUBLIC_IP:1122/api/bando/payments/bank-webhook
+C:\Users\PC\Desktop\Code\nso-server\mysql.properties
 ```
 
-For production with a domain and HTTPS, put Nginx/Caddy/IIS in front of port `1122` and use:
+Mặc định backend tạo/dùng DB:
 
 ```text
-https://YOUR_DOMAIN/api/bando/payments/bank-webhook
+bando
 ```
 
-## Required `.env`
+Các bảng chính:
 
-Set the MySQL values for the VPS:
+- `bando_items`: bảng giá vật phẩm.
+- `bando_inventory`: số lượng vật phẩm lấy từ hành trang BOT trong game.
+- `bando_orders`: đơn hàng tạo từ chat riêng trong game.
+- `bando_transactions`: lịch sử khớp thanh toán.
+- `bando_events`: nhật ký hệ thống.
+- `bando_bot_config`: cấu hình BOT quản lý trên web.
+
+## Đồng bộ vật phẩm server
+
+Trên web vào `Thêm item bán`, bấm `Đồng bộ DB`. Backend sẽ đọc bảng `item` trong DB server game, lưu `item_id` và tên vật phẩm vào DB `bando`.
+
+Sau đó admin cấu hình:
+
+- `Tên mua trong game`: tên viết tắt người chơi dùng để mua.
+- `Đơn giá`: giá cho 1 vật phẩm.
+- `Số lượng từ hành trang BOT`: lấy tự động từ game sau khi BOT đồng bộ.
+- `Bật bán trong gian hàng`: chỉ item bật bán mới hiện trong lệnh `xem`.
+
+## Lệnh chat riêng với BOT
+
+- `xem`: hiện vật phẩm đang bán.
+- `mua ttd 10`: tạo đơn mua 10 vật phẩm có tên mua `ttd`.
+- `ttd+10`: cú pháp rút gọn.
+- Tin nhắn khác: BOT trả hướng dẫn lệnh.
+
+## Duyệt tay và giao vật phẩm
+
+Trong tab `Đơn hàng`, đơn ở trạng thái `Chờ tiền` sẽ có nút `Duyệt tay`.
+
+Sau khi duyệt tay, hoặc sau khi API thanh toán tự động xác nhận đúng mã giao dịch/số tiền, đơn chuyển sang `Chờ giao`. BOT đang bật sẽ tự lấy danh sách đơn chờ giao, chat riêng cho người mua để mời giao dịch nhận vật phẩm.
+
+Người mua cần đứng cùng map/khu với BOT và mời giao dịch đúng nhân vật BOT. BOT chỉ nhận giao dịch nếu tên nhân vật mời khớp với đơn đã duyệt. Khi trade mở, BOT rút vật phẩm từ rương/hành trang, tách đúng số lượng nếu cần, khóa giao dịch, đợi người mua xác nhận rồi hoàn tất đơn trên web.
+
+## Telegram và VietQR trả tiền khách bán xu
+
+Khi khách bán xu cho BOT và đã gửi đúng thông tin ngân hàng, Telegram sẽ nhận tin `KHÁCH ĐÃ GỬI THÔNG TIN NHẬN TIỀN`. Backend tạo thêm ảnh VietQR bằng Quick Link của VietQR.io và gửi vào nhóm để admin quét trả tiền nhanh.
+
+Cấu hình tùy chọn trong `.env`:
 
 ```text
-BANDO_DB_HOST=127.0.0.1
-BANDO_DB_PORT=3306
-BANDO_DB_USER=root
-BANDO_DB_PASS=your-password
-BANDO_DB_NAME=bando
-BANDO_PUBLIC_URL=http://YOUR_PUBLIC_IP:1122
+BANDO_VIETQR_ENABLED=1
+BANDO_VIETQR_TEMPLATE=compact2
+BANDO_VIETQR_FORMAT=png
 ```
 
-Keep real API tokens and callback signatures out of Git. Configure bank accounts and signatures from the BANDO admin web after the server is running.
+QR dùng ngân hàng, số tài khoản, chủ tài khoản của khách; số tiền là số tiền shop cần trả cho phiếu bán xu; nội dung chuyển khoản là `TRA XU <MÃ_PHIẾU>`.
 
-## Telegram Admin Bot
+## Kiểm tra
 
-The Telegram bot uses polling, so you do not need HTTPS or a Telegram webhook.
-You can add the bot to a Telegram group and use the group chat id.
-
-Add these values to `.env` on the VPS:
-
-```text
-BANDO_TELEGRAM_ENABLED=1
-BANDO_TELEGRAM_BOT_TOKEN=bot-token-from-botfather
-BANDO_TELEGRAM_CHAT_IDS=your-group-chat-id
-BANDO_TELEGRAM_ALLOWED_USER_IDS=your-telegram-user-id
-BANDO_TELEGRAM_POLL_MS=2500
-```
-
-Send `/id` in the group to get the group chat id. Group chat ids are usually negative,
-for example `-1001234567890`.
-
-Reply to the transaction message:
-
-```text
-ok  approve payment or confirm payout
-no  cancel order/ticket
-```
-
-Backup commands:
-
-```text
-/id              show chat id and user id
-/duyet <ma_don>  approve item/xu buy order payment
-/huy <ma_don>    cancel an order or xu ticket
-/traxu <ma>      approve payout for a customer sell-xu ticket
+```powershell
+npm test
 ```
