@@ -417,7 +417,7 @@ export async function createBandoOrderFromChat(args) {
 
   const bankAccount = selectPaymentBankAccount(state.bankAccounts);
   const orderCode = createOrderCode(state.orders);
-  const paymentCode = createPaymentCode(state.orders, bankAccount, orderCode);
+  const paymentCode = orderCode;
   const totalAmount = parsed.quantity * item.sellPrice;
   const now = new Date().toISOString();
   const order = {
@@ -490,7 +490,7 @@ async function createCoinBuyOrderFromChat(args) {
 
   const bankAccount = selectPaymentBankAccount(args.state.bankAccounts);
   const orderCode = createOrderCode(args.state.orders);
-  const paymentCode = createPaymentCode(args.state.orders, bankAccount, orderCode);
+  const paymentCode = orderCode;
   const totalAmount = calculateCustomerPayVnd(args.coinAmount, sellConfig.rate);
   const now = new Date().toISOString();
   const order = {
@@ -1797,7 +1797,12 @@ function selectPaymentBankAccount(bankAccounts) {
 }
 
 function createOrderCode(existingOrders = []) {
-  const used = new Set(existingOrders.map((order) => String(order.orderCode || "").toUpperCase()));
+  const used = new Set(
+    existingOrders.flatMap((order) => [
+      String(order.orderCode || "").toUpperCase(),
+      String(order.paymentCode || "").toUpperCase(),
+    ]),
+  );
   for (let i = 0; i < 30; i++) {
     const timePart = (Date.now() % 46656).toString(36).toUpperCase().padStart(3, "0");
     const randomPart = Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, "0");
@@ -1806,26 +1811,6 @@ function createOrderCode(existingOrders = []) {
   }
 
   return `BD${Math.floor(Math.random() * 1679616).toString(36).toUpperCase().padStart(4, "0")}`;
-}
-
-function createPaymentCode(existingOrders = [], bankAccount, fallbackCode) {
-  const prefix = normalizePaymentPrefix(bankAccount?.paymentPrefix);
-  if (!prefix) return fallbackCode;
-
-  const used = new Set(
-    existingOrders.flatMap((order) => [
-      String(order.orderCode || "").toUpperCase(),
-      String(order.paymentCode || "").toUpperCase(),
-    ]),
-  );
-
-  for (let i = 0; i < 30; i++) {
-    const randomPart = Math.floor(Math.random() * 2176782336).toString(36).toUpperCase().padStart(6, "0");
-    const code = `${prefix}${randomPart}`;
-    if (!used.has(code)) return code;
-  }
-
-  return `${prefix}${Math.floor(Math.random() * 2176782336).toString(36).toUpperCase().padStart(6, "0")}`;
 }
 
 function normalizePaymentPrefix(value) {

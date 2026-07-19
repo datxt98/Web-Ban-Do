@@ -108,7 +108,8 @@ test("Bando API tạo đơn, khớp thanh toán và xác nhận giao hàng", asy
     assert.equal(orderPayload.order.itemCode, "test-bando-unit");
     assert.equal(orderPayload.order.quantity, 200);
     assert.equal(orderPayload.order.totalAmount, 2400000);
-    assert.ok(orderPayload.order.paymentCode.length <= 8);
+    assert.equal(orderPayload.order.paymentCode, orderPayload.order.orderCode);
+    assert.match(orderPayload.order.paymentCode, /^BD[A-Z0-9]{4,10}$/);
     assert.match(orderPayload.reply, /Noi dung chuyen khoan:/);
     assert.match(orderPayload.reply, /VCB/);
     assert.match(orderPayload.reply, /0123456789/);
@@ -229,6 +230,8 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     assert.equal(buyPayload.order.quantity, 2000000);
     assert.equal(buyPayload.order.totalAmount, 10000);
     assert.equal(buyPayload.coinTrade.type, "buy_xu");
+    assert.equal(buyPayload.order.paymentCode, buyPayload.order.orderCode);
+    assert.equal(buyPayload.coinTrade.paymentCode, buyPayload.order.orderCode);
 
     const payCoinResponse = await fetch(`${baseUrl}/api/bando/payments/confirm`, {
       method: "POST",
@@ -824,7 +827,8 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
     });
     assert.equal(orderResponse.status, 201);
     const orderPayload = await orderResponse.json();
-    assert.match(orderPayload.order.paymentCode, /^MBN[A-Z0-9]{6}$/);
+    assert.equal(orderPayload.order.paymentCode, orderPayload.order.orderCode);
+    assert.match(orderPayload.order.paymentCode, /^BD[A-Z0-9]{4,10}$/);
 
     const webhookResponse = await fetch(`${baseUrl}/api/bando/payments/bank-webhook`, {
       method: "POST",

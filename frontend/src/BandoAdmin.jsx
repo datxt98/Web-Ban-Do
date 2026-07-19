@@ -1976,7 +1976,7 @@ export default function BandoAdmin() {
                   <th>Nhân vật</th>
                   <th>Vật phẩm</th>
                   <th>Tổng tiền</th>
-                  <th>Mã GD</th>
+                  <th>Nội dung CK</th>
                   <th>Trạng thái</th>
                   <th></th>
                 </tr>
