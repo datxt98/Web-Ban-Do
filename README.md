@@ -77,6 +77,8 @@ Sau đó admin cấu hình:
 - `ttd+10`: cú pháp rút gọn.
 - Tin nhắn khác: BOT trả hướng dẫn lệnh.
 
+Từ các đơn mới, `Mã đơn` và `Nội dung chuyển khoản` dùng chung một mã dạng `BD...` để dễ đối soát trên web, Telegram và webhook ngân hàng.
+
 ## Duyệt tay và giao vật phẩm
 
 Trong tab `Đơn hàng`, đơn ở trạng thái `Chờ tiền` sẽ có nút `Duyệt tay`.
