@@ -467,6 +467,40 @@ test("Bando BOT dùng cấu hình web để xác nhận đúng nhân vật", asy
   }
 });
 
+test("Bando BOT lấy danh sách game/server không cần API quản trị", async () => {
+  const { server, baseUrl } = await listen(createApp({ serveFrontend: false }));
+  try {
+    const createResponse = await fetch(`${baseUrl}/api/bando/game-servers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        gameName: "Ninja Mobile",
+        name: "S99-Test",
+        code: "s99-test",
+        status: "online",
+        dbHost: "private-db-host",
+        dbPort: 3306,
+        dbUser: "private-user",
+        dbPassword: "private-password",
+        dbGameDatabase: "private-game-db",
+        dbPlayerDatabase: "private-player-db",
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+
+    const listResponse = await fetch(`${baseUrl}/api/bando/bot/game-servers`);
+    assert.equal(listResponse.status, 200);
+    const listPayload = await listResponse.json();
+    const serverProfile = listPayload.gameServers.find((entry) => entry.name === "S99-Test");
+    assert.equal(serverProfile.gameName, "Ninja Mobile");
+    assert.equal(serverProfile.serverName, "S99-Test");
+    assert.equal(serverProfile.dbHost, undefined);
+    assert.equal(serverProfile.dbPassword, undefined);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("Bando API duyệt tay đơn hàng và đưa vào danh sách chờ BOT giao", async () => {
   const { server, baseUrl } = await listen(createApp({ serveFrontend: false }));
   try {
