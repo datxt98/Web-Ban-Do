@@ -62,18 +62,29 @@ Keep real API tokens and callback signatures out of Git. Configure bank accounts
 ## Telegram Admin Bot
 
 The Telegram bot uses polling, so you do not need HTTPS or a Telegram webhook.
+You can add the bot to a Telegram group and use the group chat id.
 
 Add these values to `.env` on the VPS:
 
 ```text
 BANDO_TELEGRAM_ENABLED=1
 BANDO_TELEGRAM_BOT_TOKEN=bot-token-from-botfather
-BANDO_TELEGRAM_CHAT_IDS=your-chat-id
+BANDO_TELEGRAM_CHAT_IDS=your-group-chat-id
 BANDO_TELEGRAM_ALLOWED_USER_IDS=your-telegram-user-id
 BANDO_TELEGRAM_POLL_MS=2500
 ```
 
-Commands:
+Send `/id` in the group to get the group chat id. Group chat ids are usually negative,
+for example `-1001234567890`.
+
+Reply to the transaction message:
+
+```text
+ok  approve payment or confirm payout
+no  cancel order/ticket
+```
+
+Backup commands:
 
 ```text
 /id              show chat id and user id

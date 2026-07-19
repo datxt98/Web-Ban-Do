@@ -612,7 +612,21 @@ async function createCoinSellRequestFromChat(args) {
 }
 
 function notifyOrderCreated(type, payload) {
+  notifyBandoEvent(type, payload);
+}
+
+function notifyBandoEvent(type, payload) {
   emitBandoEvent(type, payload);
+}
+
+function notifyDeliveryEvent(result) {
+  if (result?.order) {
+    notifyBandoEvent("delivery_completed", { order: result.order });
+    return;
+  }
+  if (result?.coinTrade) {
+    notifyBandoEvent("coin_received", { coinTrade: result.coinTrade });
+  }
 }
 
 async function saveCoinTradePayoutInfoFromChat(args) {
@@ -627,7 +641,9 @@ async function saveCoinTradePayoutInfoFromChat(args) {
   const mysqlResult = await updateCoinTradePayoutInfoMysql(payload);
   if (mysqlResult) {
     if (!mysqlResult.ok) return mysqlResult;
-    return { ok: true, coinTrade: mysqlResult.coinTrade, reply: buildPayoutInfoSavedReply(mysqlResult.coinTrade) };
+    const result = { ok: true, coinTrade: mysqlResult.coinTrade, reply: buildPayoutInfoSavedReply(mysqlResult.coinTrade) };
+    notifyBandoEvent("coin_payout_info_saved", { coinTrade: result.coinTrade });
+    return result;
   }
 
   const trade = memoryState.coinTrades.find(
@@ -646,7 +662,9 @@ async function saveCoinTradePayoutInfoFromChat(args) {
   trade.accountName = args.accountName;
   trade.status = "completed";
   pushMemoryEvent(trade.orderCode, "coin_payout_info_saved", `${args.characterName} da gui thong tin nhan tien.`);
-  return { ok: true, coinTrade: { ...trade }, reply: buildPayoutInfoSavedReply(trade) };
+  const result = { ok: true, coinTrade: { ...trade }, reply: buildPayoutInfoSavedReply(trade) };
+  notifyBandoEvent("coin_payout_info_saved", { coinTrade: result.coinTrade });
+  return result;
 }
 
 async function cancelCoinTradePayoutInfoFromChat(args) {
@@ -696,13 +714,27 @@ export async function confirmBandoPayment(args) {
   if (mysqlResult) {
     if (!mysqlResult.ok) return mysqlResult;
     if (mysqlResult.alreadyCompleted) return mysqlResult;
-    return {
+    const result = {
       ...mysqlResult,
       deliveryJob: toDeliveryJob(mysqlResult.order),
     };
+    if (!mysqlResult.alreadyPaid) {
+      notifyBandoEvent("order_payment_confirmed", {
+        order: mysqlResult.order,
+        source: note || "bank",
+      });
+    }
+    return result;
   }
 
-  return confirmPaymentMemory(paymentCode, amount, note);
+  const memoryResult = confirmPaymentMemory(paymentCode, amount, note);
+  if (memoryResult.ok && !memoryResult.alreadyPaid && !memoryResult.alreadyCompleted) {
+    notifyBandoEvent("order_payment_confirmed", {
+      order: memoryResult.order,
+      source: note || "bank",
+    });
+  }
+  return memoryResult;
 }
 
 export async function approveBandoOrder(args) {
@@ -716,13 +748,27 @@ export async function approveBandoOrder(args) {
   const mysqlResult = await approveBandoOrderMysql(orderCode, note);
   if (mysqlResult) {
     if (!mysqlResult.ok) return mysqlResult;
-    return {
+    const result = {
       ...mysqlResult,
       deliveryJob: toDeliveryJob(mysqlResult.order),
     };
+    if (!mysqlResult.alreadyPaid) {
+      notifyBandoEvent("order_payment_confirmed", {
+        order: mysqlResult.order,
+        source: "telegram/admin",
+      });
+    }
+    return result;
   }
 
-  return approveOrderMemory(orderCode, note);
+  const memoryResult = approveOrderMemory(orderCode, note);
+  if (memoryResult.ok && !memoryResult.alreadyPaid) {
+    notifyBandoEvent("order_payment_confirmed", {
+      order: memoryResult.order,
+      source: "telegram/admin",
+    });
+  }
+  return memoryResult;
 }
 
 export async function cancelBandoRecord(args) {
@@ -733,7 +779,16 @@ export async function cancelBandoRecord(args) {
   }
 
   const mysqlResult = await cancelBandoRecordMysql(code, note);
-  if (mysqlResult) return mysqlResult;
+  if (mysqlResult) {
+    if (mysqlResult.ok) {
+      notifyBandoEvent("order_cancelled", {
+        order: mysqlResult.order,
+        coinTrade: mysqlResult.coinTrade,
+        note,
+      });
+    }
+    return mysqlResult;
+  }
 
   const order = memoryState.orders.find((entry) => entry.orderCode === code || entry.paymentCode === code);
   if (order) {
@@ -755,7 +810,9 @@ export async function cancelBandoRecord(args) {
       if (coinTrade) coinTrade.status = "cancelled";
       pushMemoryEvent(order.orderCode, "order_cancelled", note || `Admin huy don ${order.orderCode}.`);
     }
-    return { ok: true, order: { ...order } };
+    const result = { ok: true, order: { ...order } };
+    notifyBandoEvent("order_cancelled", { order: result.order, note });
+    return result;
   }
 
   const trade = memoryState.coinTrades.find((entry) => entry.orderCode === code);
@@ -767,7 +824,9 @@ export async function cancelBandoRecord(args) {
     trade.status = "cancelled";
     pushMemoryEvent(trade.orderCode, "coin_trade_cancelled", note || `Admin huy phieu xu ${trade.orderCode}.`);
   }
-  return { ok: true, coinTrade: { ...trade } };
+  const result = { ok: true, coinTrade: { ...trade } };
+  notifyBandoEvent("order_cancelled", { coinTrade: result.coinTrade, note });
+  return result;
 }
 
 export async function approveCoinTradePayout(args) {
@@ -779,7 +838,10 @@ export async function approveCoinTradePayout(args) {
   }
 
   const mysqlResult = await approveCoinTradePayoutMysql(orderCode, note);
-  if (mysqlResult) return mysqlResult;
+  if (mysqlResult) {
+    if (mysqlResult.ok) notifyBandoEvent("coin_payout_approved", { coinTrade: mysqlResult.coinTrade });
+    return mysqlResult;
+  }
 
   const trade = memoryState.coinTrades.find((entry) => entry.orderCode === orderCode);
   if (!trade) {
@@ -799,7 +861,9 @@ export async function approveCoinTradePayout(args) {
   trade.completedAt = trade.completedAt || new Date().toISOString();
   trade.payoutNotifiedAt = null;
   pushMemoryEvent(orderCode, "coin_payout_approved", note || `Admin duyệt trả ${formatVnd(trade.totalAmount)} cho ${trade.characterName}.`);
-  return { ok: true, coinTrade: { ...trade } };
+  const result = { ok: true, coinTrade: { ...trade } };
+  notifyBandoEvent("coin_payout_approved", { coinTrade: result.coinTrade });
+  return result;
 }
 
 export async function listPendingBandoDeliveries(args = {}) {
@@ -863,9 +927,14 @@ export async function confirmBandoDelivery(args) {
   }
 
   const mysqlResult = await confirmDeliveryMysql(orderCode, botName, { receivedCoinAmount });
-  if (mysqlResult) return mysqlResult;
+  if (mysqlResult) {
+    if (mysqlResult.ok) notifyDeliveryEvent(mysqlResult);
+    return mysqlResult;
+  }
 
-  return confirmDeliveryMemory(orderCode, botName, { receivedCoinAmount });
+  const memoryResult = confirmDeliveryMemory(orderCode, botName, { receivedCoinAmount });
+  if (memoryResult.ok) notifyDeliveryEvent(memoryResult);
+  return memoryResult;
 }
 
 export async function updateBandoPrice(args) {
@@ -1413,6 +1482,9 @@ function approveOrderMemory(orderCode, note) {
   }
   if (order.status === "completed") {
     return { ok: false, error: "Đơn này đã giao xong." };
+  }
+  if (order.status === "paid") {
+    return { ok: true, order: { ...order }, deliveryJob: toDeliveryJob(order), alreadyPaid: true };
   }
   if (order.status !== "paid") {
     order.status = "paid";

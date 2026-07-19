@@ -187,7 +187,7 @@ export async function approveBandoOrderMysql(orderCode, note) {
       return { ok: false, error: "Đơn này đã giao xong." };
     }
     if (order.status === "paid") {
-      return { ok: true, order };
+      return { ok: true, order, alreadyPaid: true };
     }
 
     const paidAt = new Date().toISOString();

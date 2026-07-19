@@ -23,13 +23,13 @@ export function startTelegramBot() {
     polling: false,
   };
 
-  const unsubscribe = subscribeBandoEvents((event) => notifyTelegramOrderEvent(ctx, event));
+  const unsubscribe = subscribeBandoEvents((event) => notifyTelegramEvent(ctx, event));
   const timer = setInterval(() => pollTelegram(ctx), pollMs);
   deleteTelegramWebhook(ctx).finally(() => pollTelegram(ctx));
 
   console.log(`[bando:telegram] Bot Telegram dang chay polling moi ${pollMs}ms.`);
   if (chatIds.length === 0) {
-    console.warn("[bando:telegram] Chua co BANDO_TELEGRAM_CHAT_IDS, bot se khong gui thong bao don moi.");
+    console.warn("[bando:telegram] Chua co BANDO_TELEGRAM_CHAT_IDS, bot se khong gui thong bao ve group.");
   }
 
   return {
@@ -40,86 +40,139 @@ export function startTelegramBot() {
   };
 }
 
-async function notifyTelegramOrderEvent(ctx, event) {
+async function notifyTelegramEvent(ctx, event) {
   if (!ctx.chatIds.length) return;
-  if (!["item_order_created", "coin_buy_order_created", "coin_sell_request_created"].includes(event.type)) return;
-
-  const message = buildOrderEventMessage(event);
-  const replyMarkup = buildOrderEventKeyboard(event);
-  await sendToAdminChats(ctx, message, replyMarkup);
+  const message = buildTelegramEventMessage(event);
+  if (!message) return;
+  await sendToAdminChats(ctx, message);
 }
 
-function buildOrderEventMessage(event) {
+function buildTelegramEventMessage(event) {
   const order = event.payload?.order;
   const trade = event.payload?.coinTrade;
   const bank = event.payload?.bankAccount;
 
+  if (event.type === "item_order_created" && order) {
+    return [
+      "CO DON MUA VAT PHAM MOI",
+      `Loai: order_payment`,
+      `Ma don: ${order.orderCode}`,
+      `Ma CK: ${order.paymentCode}`,
+      `Nhan vat: ${order.characterName}`,
+      `Game/SV: ${order.gameName} / ${order.serverName}`,
+      `Vat pham: ${order.itemName}`,
+      `So luong: ${formatNumber(order.quantity)}`,
+      `So tien: ${formatVnd(order.totalAmount)}`,
+      bank ? `Nhan tien: ${bank.bankName} - ${bank.accountNumber} - ${bank.accountName}` : "",
+      "Tra loi tin nay: ok = duyet thanh toan, no = huy don.",
+    ].filter(Boolean).join("\n");
+  }
+
+  if (event.type === "coin_buy_order_created" && order) {
+    return [
+      "CO DON MUA XU MOI",
+      `Loai: order_payment`,
+      `Ma don: ${order.orderCode}`,
+      `Ma CK: ${order.paymentCode}`,
+      `Nhan vat: ${order.characterName}`,
+      `Game/SV: ${order.gameName} / ${order.serverName}`,
+      `So xu: ${formatXu(trade?.coinAmount ?? order.quantity)}`,
+      `So tien: ${formatVnd(order.totalAmount)}`,
+      bank ? `Nhan tien: ${bank.bankName} - ${bank.accountNumber} - ${bank.accountName}` : "",
+      "Tra loi tin nay: ok = duyet thanh toan, no = huy don.",
+    ].filter(Boolean).join("\n");
+  }
+
   if (event.type === "coin_sell_request_created" && trade) {
     return [
-      "CO PHIEU BAN XU MOI",
+      "CO PHIEU KHACH BAN XU MOI",
+      `Loai: coin_sell_request`,
       `Ma phieu: ${trade.orderCode}`,
       `Nhan vat: ${trade.characterName}`,
       `Game/SV: ${trade.gameName} / ${trade.serverName}`,
       `Khach ban: ${formatXu(trade.coinAmount)}`,
       `Can tra: ${formatVnd(trade.totalAmount)}`,
-      "Lenh: /huy " + trade.orderCode,
+      "Phieu nay se tiep tuc sau khi BOT nhan du xu va khach gui STK.",
+      "Tra loi tin nay: no = huy phieu.",
     ].join("\n");
   }
 
-  if (!order) return "Co don moi nhung thieu du lieu.";
-  const isCoinOrder = event.type === "coin_buy_order_created";
-  const lines = [
-    isCoinOrder ? "CO DON MUA XU MOI" : "CO DON MUA VAT PHAM MOI",
-    `Ma don: ${order.orderCode}`,
-    `Ma CK: ${order.paymentCode}`,
-    `Nhan vat: ${order.characterName}`,
-    `Game/SV: ${order.gameName} / ${order.serverName}`,
-  ];
-
-  if (isCoinOrder && trade) {
-    lines.push(`So xu: ${formatXu(trade.coinAmount)}`);
-  } else {
-    lines.push(`Vat pham: ${order.itemName}`);
-    lines.push(`So luong: ${formatNumber(order.quantity)}`);
+  if (event.type === "coin_payout_info_saved" && trade) {
+    return [
+      "CAN TRA TIEN CHO KHACH BAN XU",
+      `Loai: coin_payout`,
+      `Ma phieu: ${trade.orderCode}`,
+      `Nhan vat: ${trade.characterName}`,
+      `Game/SV: ${trade.gameName} / ${trade.serverName}`,
+      `Da nhan: ${formatXu(trade.receivedCoinAmount || trade.coinAmount)}`,
+      `So tien tra: ${formatVnd(trade.totalAmount)}`,
+      `Ngan hang: ${trade.bankName}`,
+      `STK: ${trade.accountNumber}`,
+      `Chu TK: ${trade.accountName}`,
+      "Tra loi tin nay: ok = da chuyen tien, no = huy phieu.",
+    ].join("\n");
   }
 
-  lines.push(`So tien: ${formatVnd(order.totalAmount)}`);
-  if (bank) {
-    lines.push(`Nhan tien: ${bank.bankName} - ${bank.accountNumber} - ${bank.accountName}`);
-  }
-  lines.push(`Lenh: /duyet ${order.orderCode} hoac /huy ${order.orderCode}`);
-  return lines.join("\n");
-}
-
-function buildOrderEventKeyboard(event) {
-  const order = event.payload?.order;
-  const trade = event.payload?.coinTrade;
-  if (event.type === "coin_sell_request_created" && trade?.orderCode) {
-    return {
-      inline_keyboard: [
-        [
-          { text: "Huy phieu", callback_data: `bando:cancel:${trade.orderCode}` },
-        ],
-      ],
-    };
+  if (event.type === "order_payment_confirmed" && order) {
+    return [
+      "DA THANH TOAN THANH CONG",
+      `Ma don: ${order.orderCode}`,
+      `Ma CK: ${order.paymentCode}`,
+      `Nhan vat: ${order.characterName}`,
+      `So tien: ${formatVnd(order.totalAmount)}`,
+      `Nguon: ${event.payload?.source || "he thong"}`,
+      "BOT se giao hang khi khach moi giao dich.",
+    ].join("\n");
   }
 
-  if (!order?.orderCode) return null;
-  return {
-    inline_keyboard: [
-      [
-        { text: "Duyet thanh toan", callback_data: `bando:approve:${order.orderCode}` },
-        { text: "Huy don", callback_data: `bando:cancel:${order.orderCode}` },
-      ],
-    ],
-  };
+  if (event.type === "order_cancelled" && (order || trade)) {
+    return [
+      "DA HUY GIAO DICH",
+      `Ma: ${order?.orderCode || trade?.orderCode}`,
+      `Nhan vat: ${order?.characterName || trade?.characterName || ""}`,
+      `Ly do: ${event.payload?.note || "Admin huy"}`,
+    ].join("\n");
+  }
+
+  if (event.type === "coin_payout_approved" && trade) {
+    return [
+      "DA XAC NHAN TRA TIEN CHO KHACH",
+      `Ma phieu: ${trade.orderCode}`,
+      `Nhan vat: ${trade.characterName}`,
+      `So tien: ${formatVnd(trade.totalAmount)}`,
+      "BOT se bao khach da thanh toan.",
+    ].join("\n");
+  }
+
+  if (event.type === "delivery_completed" && order) {
+    return [
+      "BOT DA GIAO HANG THANH CONG",
+      `Ma don: ${order.orderCode}`,
+      `Nhan vat: ${order.characterName}`,
+      `Vat pham: ${order.itemName}`,
+      `So luong: ${formatNumber(order.quantity)}`,
+    ].join("\n");
+  }
+
+  if (event.type === "coin_received" && trade) {
+    return [
+      "BOT DA NHAN XU TU KHACH",
+      `Ma phieu: ${trade.orderCode}`,
+      `Nhan vat: ${trade.characterName}`,
+      `Da nhan: ${formatXu(trade.receivedCoinAmount || trade.coinAmount)}`,
+      "Dang cho khach gui thong tin ngan hang.",
+    ].join("\n");
+  }
+
+  return null;
 }
 
 async function pollTelegram(ctx) {
   if (ctx.polling) return;
   ctx.polling = true;
   try {
-    const url = `${TELEGRAM_API_BASE}/bot${ctx.token}/getUpdates?timeout=0&offset=${ctx.offset}&allowed_updates=${encodeURIComponent(JSON.stringify(["message", "callback_query"]))}`;
+    const allowedUpdates = encodeURIComponent(JSON.stringify(["message"]));
+    const url = `${TELEGRAM_API_BASE}/bot${ctx.token}/getUpdates?timeout=0&offset=${ctx.offset}&allowed_updates=${allowedUpdates}`;
     const response = await fetch(url);
     const payload = await response.json();
     if (!payload.ok || !Array.isArray(payload.result)) {
@@ -139,11 +192,6 @@ async function pollTelegram(ctx) {
 }
 
 async function handleTelegramUpdate(ctx, update) {
-  if (update.callback_query) {
-    await handleCallbackQuery(ctx, update.callback_query);
-    return;
-  }
-
   const message = update.message;
   if (!message) return;
   const text = String(message.text || "").trim();
@@ -159,35 +207,43 @@ async function handleTelegramUpdate(ctx, update) {
     return;
   }
 
-  const command = parseCommand(text);
-  if (!command) {
-    await sendTelegramMessage(ctx, message.chat.id, buildHelpText());
+  const replyCommand = parseReplyDecision(text, message.reply_to_message);
+  if (replyCommand) {
+    const resultText = await runCommand(replyCommand, message.from);
+    await sendTelegramMessage(ctx, message.chat.id, resultText, { reply_to_message_id: message.message_id });
     return;
   }
+
+  const command = parseCommand(text);
+  if (!command) return;
 
   const resultText = await runCommand(command, message.from);
   await sendTelegramMessage(ctx, message.chat.id, resultText);
 }
 
-async function handleCallbackQuery(ctx, query) {
-  const message = query.message;
-  const chatId = message?.chat?.id;
-  if (!chatId) return;
+function parseReplyDecision(text, repliedMessage) {
+  if (!repliedMessage) return null;
+  const decision = normalizeDecision(text);
+  if (!decision) return null;
 
-  if (!isAuthorized(ctx, chatId, query.from?.id)) {
-    await answerCallback(ctx, query.id, "Khong co quyen.");
-    return;
+  const repliedText = String(repliedMessage.text || repliedMessage.caption || "");
+  const code = extractBandoCode(repliedText);
+  if (!code) return null;
+
+  const type = extractMessageType(repliedText);
+  if (decision === "no") return { action: "cancel", code };
+
+  if (type === "coin_payout") return { action: "payout", code };
+  if (type === "order_payment") return { action: "approve", code };
+  if (type === "coin_sell_request") {
+    return {
+      action: "info",
+      code,
+      message: `Phieu ${code} se tu dong tiep tuc sau khi BOT nhan du xu va khach gui STK. Neu muon huy hay reply: no`,
+    };
   }
 
-  const match = String(query.data || "").match(/^bando:(approve|cancel|payout):([A-Za-z0-9_-]{3,64})$/);
-  if (!match) {
-    await answerCallback(ctx, query.id, "Lenh khong hop le.");
-    return;
-  }
-
-  const resultText = await runCommand({ action: match[1], code: match[2].toUpperCase() }, query.from);
-  await answerCallback(ctx, query.id, "Da xu ly.");
-  await sendTelegramMessage(ctx, chatId, resultText);
+  return { action: "approve", code };
 }
 
 function parseCommand(text) {
@@ -204,6 +260,8 @@ function parseCommand(text) {
 }
 
 async function runCommand(command, from) {
+  if (command.action === "info") return command.message || buildHelpText();
+
   const actor = formatActor(from);
   if (command.action === "approve") {
     const result = await approveBandoOrder({
@@ -211,7 +269,7 @@ async function runCommand(command, from) {
       note: `Telegram ${actor} duyet thanh toan`,
     });
     if (!result.ok) return `Duyet ${command.code} that bai: ${result.error}`;
-    return `Da duyet thanh toan don ${result.order?.orderCode || command.code}. BOT se giao hang khi khach moi giao dich.`;
+    return `Da duyet thanh toan don ${result.order?.orderCode || command.code}.`;
   }
 
   if (command.action === "cancel") {
@@ -229,7 +287,7 @@ async function runCommand(command, from) {
       note: `Telegram ${actor} duyet tra tien`,
     });
     if (!result.ok) return `Duyet tra tien ${command.code} that bai: ${result.error}`;
-    return `Da duyet tra tien phieu ${result.coinTrade?.orderCode || command.code}. BOT se bao khach da thanh toan.`;
+    return `Da xac nhan tra tien phieu ${result.coinTrade?.orderCode || command.code}.`;
   }
 
   return buildHelpText();
@@ -239,38 +297,34 @@ function buildHelpText() {
   return [
     "Lenh BOT Telegram ban do:",
     "/id - lay chat id va user id",
+    "Reply OK vao tin don de duyet thanh toan hoac xac nhan da tra tien.",
+    "Reply NO vao tin don de huy don/phieu.",
     "/duyet <ma_don> - duyet thanh toan thu cong",
     "/huy <ma_don> - huy don/phieu xu",
     "/traxu <ma_phieu> - duyet da tra tien cho khach ban xu",
   ].join("\n");
 }
 
-async function sendToAdminChats(ctx, text, replyMarkup = null) {
+async function sendToAdminChats(ctx, text) {
   for (const chatId of ctx.chatIds) {
     try {
-      await sendTelegramMessage(ctx, chatId, text, replyMarkup);
+      await sendTelegramMessage(ctx, chatId, text);
     } catch (error) {
       console.error("[bando:telegram] gui thong bao loi:", error instanceof Error ? error.message : error);
     }
   }
 }
 
-async function sendTelegramMessage(ctx, chatId, text, replyMarkup = null) {
+async function sendTelegramMessage(ctx, chatId, text, options = null) {
   const payload = {
     chat_id: chatId,
     text,
     disable_web_page_preview: true,
   };
-  if (replyMarkup) payload.reply_markup = replyMarkup;
+  if (options?.reply_to_message_id) {
+    payload.reply_to_message_id = options.reply_to_message_id;
+  }
   await telegramApi(ctx, "sendMessage", payload);
-}
-
-async function answerCallback(ctx, callbackQueryId, text) {
-  await telegramApi(ctx, "answerCallbackQuery", {
-    callback_query_id: callbackQueryId,
-    text,
-    show_alert: false,
-  });
 }
 
 async function deleteTelegramWebhook(ctx) {
@@ -304,6 +358,31 @@ function isAuthorized(ctx, chatId, userId) {
 
 function isIdCommand(text) {
   return ["/id", "id", "/chatid", "chatid"].includes(text.trim().toLowerCase());
+}
+
+function normalizeDecision(text) {
+  const value = text.trim().toLowerCase();
+  if (["ok", "oke", "yes", "duyet", "dong y"].includes(value)) return "ok";
+  if (["no", "ko", "khong", "huy", "cancel"].includes(value)) return "no";
+  return null;
+}
+
+function extractMessageType(text) {
+  const match = text.match(/^Loai:\s*([A-Za-z0-9_-]+)/im);
+  return match ? match[1].trim().toLowerCase() : "";
+}
+
+function extractBandoCode(text) {
+  const patterns = [
+    /Ma\s+don:\s*([A-Za-z0-9_-]{3,64})/i,
+    /Ma\s+phieu:\s*([A-Za-z0-9_-]{3,64})/i,
+    /Ma:\s*([A-Za-z0-9_-]{3,64})/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[1].toUpperCase();
+  }
+  return "";
 }
 
 function formatActor(from) {
