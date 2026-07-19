@@ -131,6 +131,7 @@ async function pollBandoCreatedEvents(ctx) {
 async function buildTelegramEventMessage(event) {
   const body = buildTelegramEventBody(event);
   if (!body) return null;
+  if (event.type === "bank_unmatched_payment") return body;
   const stats = await buildStatsSection("THỐNG KÊ HÔM NAY", vietnamTodayRange());
   return stats ? `${body}\n\n${stats}` : body;
 }
@@ -140,6 +141,25 @@ function buildTelegramEventBody(event) {
   const trade = event.payload?.coinTrade;
   const bank = event.payload?.bankAccount;
   const bankTransaction = event.payload?.bankTransaction;
+
+  if (event.type === "bank_unmatched_payment" && bankTransaction) {
+    return [
+      "⚠️ <b>TIỀN CHUYỂN KHÔNG KHỚP MÃ NẠP</b>",
+      "",
+      `Số tiền chuyển: <b>${formatVnd(bankTransaction.amount)}</b>`,
+      `Ngân hàng người chuyển: ${h(bankTransaction.senderBankName || "Không rõ")}`,
+      bankTransaction.senderName ? `Người chuyển: ${h(bankTransaction.senderName)}` : "",
+      bankTransaction.senderAccount ? `TK người chuyển: ${h(bankTransaction.senderAccount)}` : "",
+      bankTransaction.bankAccount
+        ? `TK shop nhận: ${formatBankAccount(bankTransaction.bankAccount)}`
+        : bankTransaction.receiverAccount
+          ? `TK nhận: ${h(bankTransaction.receiverAccount)}`
+          : "",
+      bankTransaction.transactionId ? `Mã GD bank: ${h(bankTransaction.transactionId)}` : "",
+      `Nội dung chuyển: ${h(bankTransaction.description || "-")}`,
+      event.payload?.reason ? `Ghi chú: ${h(event.payload.reason)}` : "",
+    ].filter(Boolean).join("\n");
+  }
 
   if (event.type === "item_order_created" && order) {
     return [
@@ -727,6 +747,17 @@ function extractBandoCode(text) {
 }
 
 function telegramEventDedupKey(event) {
+  if (event.type === "bank_unmatched_payment") {
+    const transaction = event.payload?.bankTransaction;
+    const key = transaction?.transactionId || [
+      transaction?.amount,
+      transaction?.description,
+      transaction?.senderBankName,
+      transaction?.senderAccount,
+      transaction?.receiverAccount,
+    ].map((value) => String(value || "").trim()).join("|");
+    return key ? `${event.type}:${key}` : "";
+  }
   const orderCode = String(event.payload?.order?.orderCode || event.payload?.coinTrade?.orderCode || "").trim().toUpperCase();
   if (!orderCode) return "";
   return `${event.type}:${orderCode}`;

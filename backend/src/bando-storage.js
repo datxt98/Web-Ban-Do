@@ -76,6 +76,7 @@ const memoryState = {
 
 const memoryInventoryByItemId = new Map();
 const DEFAULT_GAME_NAME = "Ninja Mobile";
+const SAFE_CODE_ALPHABET = "123456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const memoryEventLimit = 200;
 let memoryBotConfig = createDefaultBotConfig();
 let memoryBotConfigUpdatedAt = new Date().toISOString();
@@ -1729,13 +1730,13 @@ function normalizeBotCoinAmount(value) {
 function createCoinTradeCode(existingTrades = [], prefix = "SX") {
   const used = new Set(existingTrades.map((trade) => String(trade.orderCode || "").toUpperCase()));
   for (let i = 0; i < 30; i++) {
-    const timePart = (Date.now() % 46656).toString(36).toUpperCase().padStart(3, "0");
-    const randomPart = Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, "0");
+    const timePart = safeCodeFromNumber(Date.now(), 3);
+    const randomPart = randomSafeCodePart(2);
     const code = `${prefix}${timePart}${randomPart}`;
     if (!used.has(code)) return code;
   }
 
-  return `${prefix}${Math.floor(Math.random() * 1679616).toString(36).toUpperCase().padStart(4, "0")}`;
+  return `${prefix}${randomSafeCodePart(6)}`;
 }
 
 function normalizeAliases(value, buyName, code) {
@@ -1804,13 +1805,31 @@ function createOrderCode(existingOrders = []) {
     ]),
   );
   for (let i = 0; i < 30; i++) {
-    const timePart = (Date.now() % 46656).toString(36).toUpperCase().padStart(3, "0");
-    const randomPart = Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, "0");
+    const timePart = safeCodeFromNumber(Date.now(), 3);
+    const randomPart = randomSafeCodePart(2);
     const code = `BD${timePart}${randomPart}`;
     if (!used.has(code)) return code;
   }
 
-  return `BD${Math.floor(Math.random() * 1679616).toString(36).toUpperCase().padStart(4, "0")}`;
+  return `BD${randomSafeCodePart(6)}`;
+}
+
+function safeCodeFromNumber(value, length) {
+  let number = Math.max(0, Math.trunc(Number(value) || 0));
+  let code = "";
+  for (let i = 0; i < length; i++) {
+    code = SAFE_CODE_ALPHABET[number % SAFE_CODE_ALPHABET.length] + code;
+    number = Math.floor(number / SAFE_CODE_ALPHABET.length);
+  }
+  return code;
+}
+
+function randomSafeCodePart(length) {
+  let code = "";
+  for (let i = 0; i < length; i++) {
+    code += SAFE_CODE_ALPHABET[Math.floor(Math.random() * SAFE_CODE_ALPHABET.length)];
+  }
+  return code;
 }
 
 function normalizePaymentPrefix(value) {
