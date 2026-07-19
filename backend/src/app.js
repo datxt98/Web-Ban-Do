@@ -142,6 +142,10 @@ export function createApp(options = {}) {
     res.json(await listBandoGameServers());
   }));
 
+  app.get("/api/bando/bot/game-servers", authorizeBot, asyncHandler(async (_req, res) => {
+    res.json(publicGameServersResponse(await listBandoGameServers()));
+  }));
+
   app.post("/api/bando/game-servers", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await upsertBandoGameServer(req.body);
     if (!result.ok) return res.status(400).json(result);
@@ -313,6 +317,25 @@ function publicizeBotConfig(config, publicBaseUrl) {
     next.serverProfiles = next.serverProfiles.map((profile) => publicizeBotConfig(profile, publicBaseUrl));
   }
   return next;
+}
+
+function publicGameServersResponse(result) {
+  if (!result) return { ok: true, gameServers: [] };
+  return {
+    ...result,
+    gameServers: Array.isArray(result.gameServers)
+      ? result.gameServers.map((server) => ({
+          id: server.id,
+          gameName: String(server.gameName || ""),
+          name: String(server.name || server.serverName || ""),
+          serverName: String(server.name || server.serverName || ""),
+          code: String(server.code || ""),
+          status: String(server.status || ""),
+          isDefault: Boolean(server.isDefault),
+          displayOrder: Number(server.displayOrder || 0),
+        }))
+      : [],
+  };
 }
 
 function publicBaseUrlFromRequest(req) {
