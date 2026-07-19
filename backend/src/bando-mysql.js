@@ -7,6 +7,7 @@ const EVENT_PRUNE_INTERVAL_MS = 60_000;
 const NOISY_EVENT_TYPES = new Set(["inventory_synced"]);
 const DEFAULT_GAME_NAME = "Ninja Mobile";
 const NINJA_2D_GAME_NAME = "Ninja 2D";
+const DEFAULT_SERVER_ITEM_SYNC_MS = 5 * 60 * 1000;
 let mysqlDisabledUntil = 0;
 let lastEventPruneAt = 0;
 const itemSyncCache = new Map();
@@ -16,7 +17,10 @@ export async function listBandoStateMysql(args = {}) {
     const gameName = normalizeGameName(args.gameName);
     const serverName = String(args.serverName || "").trim();
     const characterName = String(args.characterName || "").trim();
-    const itemSync = serverName ? await syncItemsFromConfiguredServer(conn, gameName, serverName, { force: args.forceItemSync }) : null;
+    const shouldSyncItems = args.syncItems !== false;
+    const itemSync = serverName && shouldSyncItems
+      ? await syncItemsFromConfiguredServer(conn, gameName, serverName, { force: args.forceItemSync })
+      : null;
     const itemRows = await listItemsForServer(conn, gameName, serverName);
     const [orderRows] = await conn.query(
       `SELECT * FROM bando_orders
@@ -1329,7 +1333,7 @@ async function syncItemsFromConfiguredServer(conn, gameName, serverName, options
     return { ok: true, skipped: true, reason: "missing-server", gameName: normalizedGameName, serverName: "" };
   }
 
-  const intervalMs = readIntegerEnv("BANDO_SERVER_ITEM_SYNC_MS", 0, 0, 3_600_000);
+  const intervalMs = readIntegerEnv("BANDO_SERVER_ITEM_SYNC_MS", DEFAULT_SERVER_ITEM_SYNC_MS, 0, 3_600_000);
   const cacheKey = `${normalizedGameName.toLowerCase()}::${normalizedServerName.toLowerCase()}`;
   const cachedAt = itemSyncCache.get(cacheKey) || 0;
   if (!options.force && intervalMs > 0 && Date.now() - cachedAt < intervalMs) {
@@ -1351,6 +1355,7 @@ async function syncItemsFromConfiguredServer(conn, gameName, serverName, options
 
   const sourceResult = await readItemsFromGameServer(gameServer);
   if (!sourceResult.ok) {
+    itemSyncCache.set(cacheKey, Date.now());
     return options.failWhenMissing ? sourceResult : { ...sourceResult, skipped: true };
   }
 

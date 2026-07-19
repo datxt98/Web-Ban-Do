@@ -208,7 +208,7 @@ export async function listBandoState(args = {}) {
   const gameName = normalizeGameName(args.gameName);
   const serverName = normalizeServerName(args.serverName);
   const characterName = await resolveInventoryCharacterName(gameName, serverName);
-  const mysqlState = await listBandoStateMysql({ gameName, serverName, characterName });
+  const mysqlState = await listBandoStateMysql({ gameName, serverName, characterName, syncItems: args.syncItems });
   if (mysqlState) return mysqlState;
   return applyMemoryInventory(filterMemoryStateByServer(cloneMemoryState(), gameName, serverName), gameName, serverName, characterName);
 }
@@ -336,7 +336,7 @@ export async function createBandoOrderFromChat(args) {
     return { ok: false, error: "Thiếu tên nhân vật." };
   }
 
-  const state = await listBandoState({ gameName, serverName });
+  const state = await listBandoState({ gameName, serverName, syncItems: false });
   const botConfigPayload = await getBandoBotConfig();
   const botConfig = selectBotConfigForServer(botConfigPayload.config, gameName, serverName);
   const stockByItemId = stockMapFromInventory(args.inventory);
