@@ -370,6 +370,8 @@ export default function BandoAdmin() {
   const [authMode, setAuthMode] = useState("login");
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [newAdminUsername, setNewAdminUsername] = useState("");
+  const [newAdminPassword, setNewAdminPassword] = useState("");
   const [botConfig, setBotConfig] = useState(emptyBotConfig);
   const [configDraft, setConfigDraft] = useState(emptyBotConfig);
   const [activeGameName, setActiveGameName] = useState(() => {
@@ -555,6 +557,11 @@ export default function BandoAdmin() {
     setState(emptyState);
     setMessage(null);
     setAuthMode("login");
+  }
+
+  function resetNewAdminDrafts() {
+    setNewAdminUsername("");
+    setNewAdminPassword("");
   }
 
   async function runAction(action) {
@@ -928,6 +935,10 @@ export default function BandoAdmin() {
         <button className={activeView === "bank" ? "tab active" : "tab"} onClick={() => setActiveView("bank")}>
           <CreditCard size={17} />
           Tài khoản
+        </button>
+        <button className={activeView === "admin" ? "tab active" : "tab"} onClick={() => setActiveView("admin")}>
+          <UserPlus size={17} />
+          Admin
         </button>
         <button className={activeView === "xu" ? "tab active" : "tab"} onClick={() => setActiveView("xu")}>
           <Coins size={17} />
@@ -1618,6 +1629,73 @@ export default function BandoAdmin() {
               </tbody>
             </table>
           </div>
+        </section>
+      )}
+
+      {activeView === "admin" && (
+        <section className="panel">
+          <div className="panelHeader">
+            <div>
+              <span className="kicker">Bảo mật</span>
+              <h2>Tài khoản quản trị</h2>
+            </div>
+            <span className="dbBadge">
+              <LockKeyhole size={16} />
+              Đang đăng nhập: {authUser.username}
+            </span>
+          </div>
+
+          <div className="formGrid two">
+            <label>
+              <span>Tên đăng nhập mới</span>
+              <input
+                value={newAdminUsername}
+                onChange={(event) => setNewAdminUsername(event.target.value)}
+                placeholder="VD: admin2"
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              <span>Mật khẩu mới</span>
+              <input
+                type="password"
+                value={newAdminPassword}
+                onChange={(event) => setNewAdminPassword(event.target.value)}
+                placeholder="Tối thiểu 4 ký tự"
+                autoComplete="new-password"
+              />
+            </label>
+            <div className="spanAll rowActions">
+              <button
+                className="primaryButton"
+                disabled={busy}
+                onClick={() =>
+                  void runAction(async () => {
+                    const username = newAdminUsername.trim().toLowerCase();
+                    await jsonFetch("/api/bando/auth/register", {
+                      method: "POST",
+                      body: JSON.stringify({
+                        username: newAdminUsername,
+                        password: newAdminPassword,
+                      }),
+                    });
+                    resetNewAdminDrafts();
+                    return `Đã tạo tài khoản quản trị ${username}.`;
+                  })
+                }
+              >
+                <UserPlus size={17} />
+                Tạo tài khoản
+              </button>
+              <button className="toolButton" type="button" onClick={resetNewAdminDrafts}>
+                Xóa nhập liệu
+              </button>
+            </div>
+          </div>
+
+          <p className="hintText">
+            Chỉ tài khoản admin đang đăng nhập mới tạo thêm được tài khoản quản trị. Mật khẩu cần tối thiểu 4 ký tự.
+          </p>
         </section>
       )}
 
