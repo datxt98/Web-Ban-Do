@@ -35,6 +35,7 @@ import {
   deleteBandoGameServerMysql,
   findBandoAdminUserByUsernameMysql,
   getBandoBotConfigMysql,
+  getBandoRevenueStatsMysql,
   importServerItemsMysql,
   insertBandoAdminUserMysql,
   insertBandoCoinTradeMysql,
@@ -209,6 +210,17 @@ export async function listBandoState(args = {}) {
   const mysqlState = await listBandoStateMysql({ gameName, serverName, characterName });
   if (mysqlState) return mysqlState;
   return applyMemoryInventory(filterMemoryStateByServer(cloneMemoryState(), gameName, serverName), gameName, serverName, characterName);
+}
+
+export async function getBandoRevenueStats(args = {}) {
+  const fromIso = String(args.fromIso || "").trim();
+  const toIso = String(args.toIso || "").trim();
+  if (!fromIso || !toIso) return { ok: false, error: "Thieu khoang thoi gian thong ke." };
+
+  const mysqlResult = await getBandoRevenueStatsMysql({ fromIso, toIso });
+  if (mysqlResult) return mysqlResult;
+
+  return buildRevenueStatsFromMemory(fromIso, toIso);
 }
 
 export async function getBandoBotConfig() {
@@ -705,6 +717,7 @@ export async function confirmBandoPayment(args) {
   const paymentCode = String(args.paymentCode || "").trim().toUpperCase();
   const amount = Number(args.amount);
   const note = String(args.note || "").trim();
+  const bankTransaction = args.bankTransaction || null;
 
   if (!paymentCode || !Number.isFinite(amount) || amount <= 0) {
     return { ok: false, error: "Thiếu mã giao dịch hoặc số tiền hợp lệ." };
@@ -721,7 +734,9 @@ export async function confirmBandoPayment(args) {
     if (!mysqlResult.alreadyPaid) {
       notifyBandoEvent("order_payment_confirmed", {
         order: mysqlResult.order,
-        source: note || "bank",
+        bankTransaction,
+        note,
+        source: bankTransaction ? "bank webhook" : (note || "bank"),
       });
     }
     return result;
@@ -731,7 +746,9 @@ export async function confirmBandoPayment(args) {
   if (memoryResult.ok && !memoryResult.alreadyPaid && !memoryResult.alreadyCompleted) {
     notifyBandoEvent("order_payment_confirmed", {
       order: memoryResult.order,
-      source: note || "bank",
+      bankTransaction,
+      note,
+      source: bankTransaction ? "bank webhook" : (note || "bank"),
     });
   }
   return memoryResult;
@@ -755,6 +772,7 @@ export async function approveBandoOrder(args) {
     if (!mysqlResult.alreadyPaid) {
       notifyBandoEvent("order_payment_confirmed", {
         order: mysqlResult.order,
+        note,
         source: "telegram/admin",
       });
     }
@@ -765,6 +783,7 @@ export async function approveBandoOrder(args) {
   if (memoryResult.ok && !memoryResult.alreadyPaid) {
     notifyBandoEvent("order_payment_confirmed", {
       order: memoryResult.order,
+      note,
       source: "telegram/admin",
     });
   }
@@ -1175,6 +1194,66 @@ function cloneMemoryState() {
     events: memoryState.events.map((event) => ({ ...event })),
     storage: "memory",
   };
+}
+
+function buildRevenueStatsFromMemory(fromIso, toIso) {
+  const sell = {
+    totalOrders: 0,
+    totalAmount: 0,
+    coinOrders: 0,
+    coinAmount: 0,
+    itemOrders: 0,
+    itemAmount: 0,
+  };
+  const buy = {
+    totalOrders: 0,
+    totalAmount: 0,
+    coinOrders: 0,
+    coinAmount: 0,
+  };
+
+  for (const order of memoryState.orders) {
+    if (!["paid", "completed"].includes(order.status)) continue;
+    if (!isIsoInRange(order.paidAt || order.createdAt, fromIso, toIso)) continue;
+
+    const amount = Math.max(0, Math.trunc(Number(order.totalAmount) || 0));
+    sell.totalOrders += 1;
+    sell.totalAmount += amount;
+    if (order.itemCode === COIN_ITEM_CODE) {
+      sell.coinOrders += 1;
+      sell.coinAmount += amount;
+    } else {
+      sell.itemOrders += 1;
+      sell.itemAmount += amount;
+    }
+  }
+
+  for (const trade of memoryState.coinTrades) {
+    if (trade.type !== "sell_xu") continue;
+    if (!["awaiting_payout_info", "completed", "payout_completed"].includes(trade.status)) continue;
+    if (!isIsoInRange(trade.completedAt || trade.paidAt || trade.createdAt, fromIso, toIso)) continue;
+
+    const amount = Math.max(0, Math.trunc(Number(trade.totalAmount) || 0));
+    buy.totalOrders += 1;
+    buy.totalAmount += amount;
+    buy.coinOrders += 1;
+    buy.coinAmount += amount;
+  }
+
+  return {
+    ok: true,
+    fromIso,
+    toIso,
+    sell,
+    buy,
+    netAmount: sell.totalAmount - buy.totalAmount,
+    storage: "memory",
+  };
+}
+
+function isIsoInRange(value, fromIso, toIso) {
+  const text = String(value || "");
+  return text >= fromIso && text < toIso;
 }
 
 function filterMemoryStateByServer(state, gameName, serverName) {
