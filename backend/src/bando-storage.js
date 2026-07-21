@@ -256,7 +256,8 @@ export async function updateBandoBuffedXu(args = {}) {
   }
   const id = Math.max(0, Math.trunc(Number(args.id) || 0));
   const now = new Date().toISOString();
-  const amount = Math.max(0, Math.trunc(Number(args.amount ?? args.buffedXu) || 0));
+  const amount = parseXuAmount(args.amount ?? args.buffedXu);
+  if (amount <= 0) return { ok: false, error: "Số xu buff phải lớn hơn 0." };
   const note = String(args.note || "").trim();
   if (id > 0) {
     const existing = memoryState.buffedXuLogs.find((entry) => entry.id === id);
@@ -1372,6 +1373,7 @@ function buildWebStatisticsFromMemory(args = {}) {
     .sort((a, b) => a.gameName.localeCompare(b.gameName) || a.serverName.localeCompare(b.serverName));
   const buffedEntries = memoryState.buffedXuLogs
     .filter((entry) => entry.buffedDate >= args.fromDate && entry.buffedDate <= args.toDate)
+    .filter((entry) => positiveInteger(entry.amount) > 0)
     .map((entry) => ({ ...entry }))
     .sort((a, b) => String(b.buffedDate).localeCompare(String(a.buffedDate)) || b.id - a.id);
   const buffedXuTotal = buffedEntries.reduce((sum, entry) => sum + positiveInteger(entry.amount), 0);
@@ -1484,6 +1486,15 @@ function canEditBuffedXu(username) {
 
 function positiveInteger(value) {
   return Math.max(0, Math.trunc(Number(value) || 0));
+}
+
+function parseXuAmount(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return 0;
+  const digits = text.replace(/[^\d]/g, "");
+  if (!digits) return 0;
+  const amount = Number(digits);
+  return Number.isSafeInteger(amount) ? amount : 0;
 }
 
 function filterMemoryStateByServer(state, gameName, serverName) {

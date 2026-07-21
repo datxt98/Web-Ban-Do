@@ -497,7 +497,7 @@ export default function BandoAdmin() {
   const [statsFromDate, setStatsFromDate] = useState(todayDateInputValue());
   const [statsToDate, setStatsToDate] = useState(todayDateInputValue());
   const [statistics, setStatistics] = useState(emptyStatistics);
-  const [buffedXuDraft, setBuffedXuDraft] = useState("0");
+  const [buffedXuDraft, setBuffedXuDraft] = useState("");
   const [buffedXuDateDraft, setBuffedXuDateDraft] = useState(todayDateInputValue());
   const [buffedXuNoteDraft, setBuffedXuNoteDraft] = useState("");
   const [editingBuffedEntry, setEditingBuffedEntry] = useState(null);
@@ -645,7 +645,7 @@ export default function BandoAdmin() {
       const payload = await jsonFetch(`/api/bando/statistics${statisticsQuery(fromDate, toDate)}`);
       setStatistics(payload);
       setEditingBuffedEntry(null);
-      setBuffedXuDraft("0");
+      setBuffedXuDraft("");
       setBuffedXuDateDraft(toDate || todayDateInputValue());
       setBuffedXuNoteDraft("");
       return payload;
@@ -807,7 +807,7 @@ export default function BandoAdmin() {
 
   function resetBuffedDraft() {
     setEditingBuffedEntry(null);
-    setBuffedXuDraft("0");
+    setBuffedXuDraft("");
     setBuffedXuDateDraft(statsToDate || todayDateInputValue());
     setBuffedXuNoteDraft("");
   }
@@ -2156,12 +2156,13 @@ export default function BandoAdmin() {
                 />
               </label>
               <label>
-                <span>Số xu đã buff</span>
+                <span>Số xu cộng thêm</span>
                 <input
                   value={buffedXuDraft}
                   onChange={(event) => setBuffedXuDraft(event.target.value)}
                   inputMode="numeric"
                   disabled={!statistics?.buffedXuCanEdit}
+                  placeholder="VD: 1000000 hoặc 1.000.000"
                 />
               </label>
               <label>
@@ -2193,7 +2194,7 @@ export default function BandoAdmin() {
                         fromDate: statsFromDate,
                         toDate: statsToDate,
                         buffedDate: buffedXuDateDraft,
-                        amount: Number(buffedXuDraft),
+                        amount: buffedXuDraft,
                         note: buffedXuNoteDraft,
                       }),
                     });

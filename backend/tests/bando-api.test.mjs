@@ -503,7 +503,7 @@ test("Bando API thong ke web gom tat ca game server va khoa sua xu buff", async 
         fromDate: today,
         toDate: today,
         buffedDate: today,
-        amount: 123456789,
+        amount: "123.456.789",
         note: "buff lan 1",
       }),
     });
@@ -512,6 +512,18 @@ test("Bando API thong ke web gom tat ca game server va khoa sua xu buff", async 
     assert.equal(buffPayload.totals.buffedXu, 123456789);
     assert.equal(buffPayload.buffedEntries.length, 1);
     assert.equal(buffPayload.buffedEntries[0].note, "buff lan 1");
+
+    const zeroBuffResponse = await fetch(`${baseUrl}/api/bando/statistics/buffed-xu`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        fromDate: today,
+        toDate: today,
+        buffedDate: today,
+        amount: "0",
+      }),
+    });
+    assert.equal(zeroBuffResponse.status, 400);
 
     const secondBuffResponse = await fetch(`${baseUrl}/api/bando/statistics/buffed-xu`, {
       method: "PATCH",
