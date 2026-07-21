@@ -101,9 +101,13 @@ export function createApp(options = {}) {
 
   app.patch("/api/bando/statistics/buffed-xu", authorizeAdmin, asyncHandler(async (req, res) => {
     const result = await updateBandoBuffedXu({
+      id: req.body.id,
       fromDate: req.body.fromDate,
       toDate: req.body.toDate,
+      buffedDate: req.body.buffedDate,
+      amount: req.body.amount,
       buffedXu: req.body.buffedXu,
+      note: req.body.note,
       user: req.bandoAdminUser,
     });
     if (!result.ok) {
