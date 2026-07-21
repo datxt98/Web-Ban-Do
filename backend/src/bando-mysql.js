@@ -141,6 +141,7 @@ export async function getBandoWebStatisticsMysql(args = {}) {
          updated_at
        FROM bando_buffed_xu_logs
        WHERE buffed_date >= ? AND buffed_date <= ?
+         AND amount > 0
        ORDER BY buffed_date DESC, id DESC`,
       [range.fromDate, range.toDate],
     );
@@ -169,7 +170,8 @@ export async function upsertBandoBuffedXuMysql(args = {}) {
     if (buffedDate < range.fromDate || buffedDate > range.toDate) {
       return { ok: false, error: "Ngày buff phải nằm trong khoảng thống kê đang chọn." };
     }
-    const amount = Math.max(0, Math.trunc(Number(args.amount ?? args.buffedXu) || 0));
+    const amount = parseXuAmount(args.amount ?? args.buffedXu);
+    if (amount <= 0) return { ok: false, error: "Số xu buff phải lớn hơn 0." };
     const note = String(args.note || "").trim();
     const now = new Date().toISOString();
     const id = Math.max(0, Math.trunc(Number(args.id) || 0));
@@ -2195,6 +2197,15 @@ function normalizeAliases(value, buyName, code) {
 function toNumber(value, fallback) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+function parseXuAmount(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return 0;
+  const digits = text.replace(/[^\d]/g, "");
+  if (!digits) return 0;
+  const amount = Number(digits);
+  return Number.isSafeInteger(amount) ? amount : 0;
 }
 
 function readIntegerEnv(name, fallback, min, max) {
