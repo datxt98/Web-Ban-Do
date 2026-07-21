@@ -36,6 +36,7 @@ import {
   findBandoAdminUserByUsernameMysql,
   getBandoBotConfigMysql,
   getBandoRevenueStatsMysql,
+  getBandoWebStatisticsMysql,
   importServerItemsMysql,
   insertBandoAdminUserMysql,
   insertBandoCoinTradeMysql,
@@ -46,6 +47,7 @@ import {
   listBandoStateMysql,
   updateCoinTradePayoutInfoMysql,
   upsertBandoBankAccountMysql,
+  upsertBandoBuffedXuMysql,
   upsertBandoGameServerMysql,
   updateBandoBotConfigMysql,
   updateBandoInventoryMysql,
@@ -62,6 +64,7 @@ const memoryState = {
   bankAccounts: [],
   gameServers: [],
   adminUsers: [],
+  statAdjustments: [],
   events: [
     {
       id: 1,
@@ -179,7 +182,7 @@ export async function loginBandoAdmin(args = {}) {
 
 export async function validateBandoAdminAuth(headers = {}, options = {}) {
   if (process.env.BANDO_DISABLE_ADMIN_AUTH === "1") {
-    return { ok: true, user: { id: 0, username: "dev", role: "admin" } };
+    return { ok: true, user: { id: 0, username: process.env.BANDO_DEV_ADMIN_USERNAME || "dev", role: "admin" } };
   }
 
   const auth = String(headers.authorization || "");
@@ -222,6 +225,48 @@ export async function getBandoRevenueStats(args = {}) {
   if (mysqlResult) return mysqlResult;
 
   return buildRevenueStatsFromMemory(fromIso, toIso);
+}
+
+export async function getBandoWebStatistics(args = {}) {
+  const range = normalizeStatsRange(args);
+  if (!range.ok) return range;
+
+  const mysqlResult = await getBandoWebStatisticsMysql({ ...range, user: args.user });
+  if (mysqlResult) return mysqlResult;
+
+  return buildWebStatisticsFromMemory({ ...range, user: args.user });
+}
+
+export async function updateBandoBuffedXu(args = {}) {
+  const range = normalizeStatsRange(args);
+  if (!range.ok) return range;
+  const username = String(args.user?.username || "").trim().toLowerCase();
+  if (!canEditBuffedXu(username)) {
+    return { ok: false, error: "Chỉ tài khoản datxt998 được sửa số xu đã buff." };
+  }
+
+  const mysqlResult = await upsertBandoBuffedXuMysql({ ...range, buffedXu: args.buffedXu, user: args.user });
+  if (mysqlResult) return mysqlResult;
+
+  const key = statsAdjustmentKey(range.fromDate, range.toDate);
+  const now = new Date().toISOString();
+  const buffedXu = Math.max(0, Math.trunc(Number(args.buffedXu) || 0));
+  const existing = memoryState.statAdjustments.find((entry) => entry.key === key);
+  if (existing) {
+    existing.buffedXu = buffedXu;
+    existing.updatedBy = username;
+    existing.updatedAt = now;
+  } else {
+    memoryState.statAdjustments.push({
+      key,
+      fromDate: range.fromDate,
+      toDate: range.toDate,
+      buffedXu,
+      updatedBy: username,
+      updatedAt: now,
+    });
+  }
+  return buildWebStatisticsFromMemory({ ...range, user: args.user });
 }
 
 export async function getBandoBotConfig() {
@@ -1200,6 +1245,7 @@ function cloneMemoryState() {
     transactions: memoryState.transactions.map((transaction) => ({ ...transaction })),
     bankAccounts: memoryState.bankAccounts.map((account) => ({ ...account })),
     gameServers: memoryState.gameServers.map((server) => ({ ...server })),
+    statAdjustments: memoryState.statAdjustments.map((entry) => ({ ...entry })),
     events: memoryState.events.map((event) => ({ ...event })),
     storage: "memory",
   };
@@ -1260,9 +1306,163 @@ function buildRevenueStatsFromMemory(fromIso, toIso) {
   };
 }
 
+function buildWebStatisticsFromMemory(args = {}) {
+  const rowsByScope = new Map();
+  const findScope = (gameName, serverName) => {
+    const normalizedGameName = normalizeGameName(gameName);
+    const normalizedServerName = normalizeServerName(serverName) || "default";
+    const key = `${normalizedGameName}\u0000${normalizedServerName}`;
+    if (!rowsByScope.has(key)) {
+      rowsByScope.set(key, {
+        gameName: normalizedGameName,
+        serverName: normalizedServerName,
+        soldOrders: 0,
+        soldXu: 0,
+        soldMoney: 0,
+        importedOrders: 0,
+        importedXu: 0,
+        importedMoney: 0,
+        netIncome: 0,
+      });
+    }
+    return rowsByScope.get(key);
+  };
+
+  for (const order of memoryState.orders) {
+    if (!["paid", "completed"].includes(order.status)) continue;
+    if (!isIsoInRange(order.paidAt || order.createdAt, args.fromIso, args.toIso)) continue;
+    const scope = findScope(order.gameName, order.serverName);
+    scope.soldOrders += 1;
+    scope.soldMoney += positiveInteger(order.totalAmount);
+    if (order.itemCode === COIN_ITEM_CODE) {
+      scope.soldXu += positiveInteger(order.quantity);
+    }
+  }
+
+  for (const trade of memoryState.coinTrades) {
+    if (trade.type !== "sell_xu") continue;
+    if (!["awaiting_payout_info", "completed", "payout_completed"].includes(trade.status)) continue;
+    if (!isIsoInRange(trade.completedAt || trade.paidAt || trade.createdAt, args.fromIso, args.toIso)) continue;
+    const scope = findScope(trade.gameName, trade.serverName);
+    scope.importedOrders += 1;
+    scope.importedXu += positiveInteger(trade.receivedCoinAmount || trade.coinAmount);
+    scope.importedMoney += positiveInteger(trade.totalAmount);
+  }
+
+  const byServer = Array.from(rowsByScope.values())
+    .map((row) => ({
+      ...row,
+      netIncome: row.soldMoney - row.importedMoney,
+    }))
+    .sort((a, b) => a.gameName.localeCompare(b.gameName) || a.serverName.localeCompare(b.serverName));
+  const adjustment = findStatsAdjustment(args.fromDate, args.toDate);
+  const totals = byServer.reduce(
+    (total, row) => ({
+      soldOrders: total.soldOrders + row.soldOrders,
+      soldXu: total.soldXu + row.soldXu,
+      soldMoney: total.soldMoney + row.soldMoney,
+      importedOrders: total.importedOrders + row.importedOrders,
+      importedXu: total.importedXu + row.importedXu,
+      importedMoney: total.importedMoney + row.importedMoney,
+      netIncome: total.netIncome + row.netIncome,
+      buffedXu: total.buffedXu,
+    }),
+    {
+      soldOrders: 0,
+      soldXu: 0,
+      soldMoney: 0,
+      importedOrders: 0,
+      importedXu: 0,
+      importedMoney: 0,
+      netIncome: 0,
+      buffedXu: positiveInteger(adjustment?.buffedXu),
+    },
+  );
+
+  return {
+    ok: true,
+    fromDate: args.fromDate,
+    toDate: args.toDate,
+    fromIso: args.fromIso,
+    toIso: args.toIso,
+    totals,
+    byServer,
+    buffedXuCanEdit: canEditBuffedXu(args.user?.username),
+    adjustment: {
+      buffedXu: totals.buffedXu,
+      updatedBy: adjustment?.updatedBy || "",
+      updatedAt: adjustment?.updatedAt || "",
+    },
+    storage: "memory",
+  };
+}
+
 function isIsoInRange(value, fromIso, toIso) {
   const text = String(value || "");
   return text >= fromIso && text < toIso;
+}
+
+function normalizeStatsRange(args = {}) {
+  const today = vietnamDateInputValue();
+  const fromDate = normalizeStatsDate(args.fromDate) || today;
+  const toDate = normalizeStatsDate(args.toDate) || fromDate;
+  const fromMs = vietnamDateStartMs(fromDate);
+  const toMs = vietnamDateStartMs(toDate);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    return { ok: false, error: "Ngày thống kê không hợp lệ." };
+  }
+  if (fromMs > toMs) {
+    return { ok: false, error: "Ngày bắt đầu không được lớn hơn ngày kết thúc." };
+  }
+  return {
+    ok: true,
+    fromDate,
+    toDate,
+    fromIso: new Date(fromMs).toISOString(),
+    toIso: new Date(toMs + 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
+function normalizeStatsDate(value) {
+  const text = String(value || "").trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) return "";
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return "";
+  return text;
+}
+
+function vietnamDateInputValue(date = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function vietnamDateStartMs(dateText) {
+  return Date.parse(`${dateText}T00:00:00+07:00`);
+}
+
+function findStatsAdjustment(fromDate, toDate) {
+  const key = statsAdjustmentKey(fromDate, toDate);
+  return memoryState.statAdjustments.find((entry) => entry.key === key) || null;
+}
+
+function statsAdjustmentKey(fromDate, toDate) {
+  return `${fromDate}|${toDate}`;
+}
+
+function canEditBuffedXu(username) {
+  return String(username || "").trim().toLowerCase() === "datxt998";
+}
+
+function positiveInteger(value) {
+  return Math.max(0, Math.trunc(Number(value) || 0));
 }
 
 function filterMemoryStateByServer(state, gameName, serverName) {

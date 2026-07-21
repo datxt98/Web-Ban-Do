@@ -449,6 +449,10 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.formGrid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .formGrid.four {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -461,6 +465,25 @@ button:disabled {
 
 .spanAll {
   grid-column: 1 / -1;
+}
+
+.statisticsRow {
+  margin-top: 14px;
+}
+
+.statsFilterGrid {
+  align-items: end;
+}
+
+.statRangeNote {
+  align-self: center;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.statsBuffPanel {
+  margin-top: 14px;
 }
 
 .dataTableWrap {
@@ -699,6 +722,7 @@ button:disabled {
   .autoChatChannels,
   .coinTradeGrid,
   .formGrid.two,
+  .formGrid.three,
   .formGrid.four {
     grid-template-columns: 1fr 1fr;
   }
@@ -727,6 +751,7 @@ button:disabled {
   .autoChatChannels,
   .coinTradeGrid,
   .formGrid.two,
+  .formGrid.three,
   .formGrid.four {
     grid-template-columns: 1fr;
   }

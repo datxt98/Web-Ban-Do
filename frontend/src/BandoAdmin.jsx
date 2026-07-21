@@ -1,4 +1,5 @@
 import {
+  BarChart3,
   CheckCircle2,
   Bot,
   Coins,
@@ -39,6 +40,27 @@ const emptyState = {
   bankAccounts: [],
   gameServers: [],
   events: [],
+  storage: "memory",
+};
+
+const emptyStatistics = {
+  totals: {
+    soldOrders: 0,
+    soldXu: 0,
+    soldMoney: 0,
+    importedOrders: 0,
+    importedXu: 0,
+    importedMoney: 0,
+    netIncome: 0,
+    buffedXu: 0,
+  },
+  byServer: [],
+  buffedXuCanEdit: false,
+  adjustment: {
+    buffedXu: 0,
+    updatedBy: "",
+    updatedAt: "",
+  },
   storage: "memory",
 };
 
@@ -405,6 +427,25 @@ function coinAmountForRate(rate) {
   return numberValue(rate, 2.6) * 100000;
 }
 
+function todayDateInputValue() {
+  const now = new Date();
+  const offsetMs = now.getTimezoneOffset() * 60 * 1000;
+  return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
+function formatSignedVnd(amount) {
+  const numeric = Math.trunc(Number(amount) || 0);
+  const sign = numeric >= 0 ? "+" : "-";
+  return `${sign}${formatVnd(Math.abs(numeric))}`;
+}
+
+function statisticsQuery(fromDate, toDate) {
+  const params = new URLSearchParams();
+  if (fromDate) params.set("fromDate", fromDate);
+  if (toDate) params.set("toDate", toDate);
+  return params.toString() ? `?${params.toString()}` : "";
+}
+
 export default function BandoAdmin() {
   const [state, setState] = useState(emptyState);
   const [authReady, setAuthReady] = useState(false);
@@ -452,6 +493,11 @@ export default function BandoAdmin() {
   const [paymentPrefixDraft, setPaymentPrefixDraft] = useState("");
   const [callbackSignatureDraft, setCallbackSignatureDraft] = useState("");
   const [bankActiveDraft, setBankActiveDraft] = useState(true);
+  const [statsFromDate, setStatsFromDate] = useState(todayDateInputValue());
+  const [statsToDate, setStatsToDate] = useState(todayDateInputValue());
+  const [statistics, setStatistics] = useState(emptyStatistics);
+  const [buffedXuDraft, setBuffedXuDraft] = useState("0");
+  const [statsLoading, setStatsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
 
@@ -477,6 +523,9 @@ export default function BandoAdmin() {
     () => (state.coinTrades ?? []).filter((trade) => trade.type === "sell_xu"),
     [state.coinTrades],
   );
+
+  const statsTotals = statistics?.totals ?? emptyStatistics.totals;
+  const statsRows = statistics?.byServer ?? [];
 
   const gameOptions = useMemo(() => {
     const options = new Map(gameOptionsDefault.map((name) => [gameKey(name), name]));
@@ -585,6 +634,18 @@ export default function BandoAdmin() {
     setConfigDraft(configForServer(nextConfig, selectedGameName, selectedServerName, nextState.gameServers));
   }
 
+  async function loadStatistics(fromDate = statsFromDate, toDate = statsToDate) {
+    setStatsLoading(true);
+    try {
+      const payload = await jsonFetch(`/api/bando/statistics${statisticsQuery(fromDate, toDate)}`);
+      setStatistics(payload);
+      setBuffedXuDraft(String(payload?.totals?.buffedXu ?? 0));
+      return payload;
+    } finally {
+      setStatsLoading(false);
+    }
+  }
+
   async function bootAuth() {
     try {
       const payload = await jsonFetch("/api/bando/auth/status", {});
@@ -660,6 +721,23 @@ export default function BandoAdmin() {
       setMessage({
         tone: "error",
         text: error instanceof Error ? error.message : "Có lỗi không xác định.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runStatsAction(action) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const text = await action();
+      await loadStatistics();
+      setMessage({ tone: "ok", text });
+    } catch (error) {
+      setMessage({
+        tone: "error",
+        text: error instanceof Error ? error.message : "CÃ³ lá»—i khÃ´ng xÃ¡c Ä‘á»‹nh.",
       });
     } finally {
       setBusy(false);
@@ -999,6 +1077,16 @@ export default function BandoAdmin() {
     void bootAuth();
   }, []);
 
+  useEffect(() => {
+    if (!authUser || activeView !== "statistics") return;
+    void loadStatistics().catch((error) => {
+      setMessage({
+        tone: "error",
+        text: error instanceof Error ? error.message : "KhÃ´ng táº£i Ä‘Æ°á»£c thá»‘ng kÃª.",
+      });
+    });
+  }, [authUser, activeView, statsFromDate, statsToDate]);
+
   if (!authReady) {
     return (
       <main className="adminShell authShell">
@@ -1135,6 +1223,10 @@ export default function BandoAdmin() {
         <button className={activeView === "orders" ? "tab active" : "tab"} onClick={() => setActiveView("orders")}>
           <ListChecks size={17} />
           Đơn hàng
+        </button>
+        <button className={activeView === "statistics" ? "tab active" : "tab"} onClick={() => setActiveView("statistics")}>
+          <BarChart3 size={17} />
+          Thống kê
         </button>
       </nav>
 
@@ -1955,6 +2047,155 @@ export default function BandoAdmin() {
                 </table>
               </div>
             </div>
+          </div>
+        </section>
+      )}
+
+      {activeView === "statistics" && (
+        <section className="panel">
+          <div className="panelHeader">
+            <div>
+              <span className="kicker">Toàn bộ game và server</span>
+              <h2>Thống kê</h2>
+            </div>
+            <button
+              className="toolButton"
+              disabled={busy || statsLoading}
+              onClick={() =>
+                void loadStatistics().catch((error) => {
+                  setMessage({
+                    tone: "error",
+                    text: error instanceof Error ? error.message : "Không tải được thống kê.",
+                  });
+                })
+              }
+            >
+              <RefreshCcw size={17} />
+              Tải thống kê
+            </button>
+          </div>
+
+          <div className="formGrid four statsFilterGrid">
+            <label>
+              <span>Từ ngày</span>
+              <input type="date" value={statsFromDate} onChange={(event) => setStatsFromDate(event.target.value)} />
+            </label>
+            <label>
+              <span>Tới ngày</span>
+              <input type="date" value={statsToDate} onChange={(event) => setStatsToDate(event.target.value)} />
+            </label>
+            <div className="statRangeNote">
+              Dữ liệu được tính trên tất cả game/server trong khoảng ngày đã chọn.
+            </div>
+          </div>
+
+          <div className="statsRow statisticsRow">
+            <div className="statBox">
+              <span>Số xu đã bán</span>
+              <strong>{formatXu(statsTotals.soldXu)}</strong>
+            </div>
+            <div className="statBox">
+              <span>Số tiền đã bán được</span>
+              <strong>{formatVnd(statsTotals.soldMoney)}</strong>
+            </div>
+            <div className="statBox">
+              <span>Số xu đã nhập</span>
+              <strong>{formatXu(statsTotals.importedXu)}</strong>
+            </div>
+            <div className="statBox">
+              <span>Số tiền đã nhập xu</span>
+              <strong>{formatVnd(statsTotals.importedMoney)}</strong>
+            </div>
+            <div className="statBox">
+              <span>Tổng thu nhập</span>
+              <strong>{formatSignedVnd(statsTotals.netIncome)}</strong>
+            </div>
+            <div className="statBox">
+              <span>Số xu đã buff</span>
+              <strong>{formatXu(statsTotals.buffedXu)}</strong>
+            </div>
+          </div>
+
+          <div className="subPanel statsBuffPanel">
+            <h3>
+              <BarChart3 size={18} />
+              Xu đã buff thủ công
+            </h3>
+            <div className="formGrid three">
+              <label>
+                <span>Số xu đã buff</span>
+                <input
+                  value={buffedXuDraft}
+                  onChange={(event) => setBuffedXuDraft(event.target.value)}
+                  inputMode="numeric"
+                  disabled={!statistics?.buffedXuCanEdit}
+                />
+              </label>
+              <div className="statRangeNote">
+                {statistics?.buffedXuCanEdit
+                  ? "Bạn có quyền sửa số xu buff cho khoảng ngày này."
+                  : "Chỉ tài khoản datxt998 được sửa số xu đã buff."}
+                {statistics?.adjustment?.updatedAt
+                  ? ` Cập nhật gần nhất bởi ${statistics.adjustment.updatedBy || "-"} lúc ${statistics.adjustment.updatedAt}.`
+                  : ""}
+              </div>
+              <button
+                className="primaryButton"
+                disabled={busy || statsLoading || !statistics?.buffedXuCanEdit}
+                onClick={() =>
+                  void runStatsAction(async () => {
+                    await jsonFetch("/api/bando/statistics/buffed-xu", {
+                      method: "PATCH",
+                      body: JSON.stringify({
+                        fromDate: statsFromDate,
+                        toDate: statsToDate,
+                        buffedXu: Number(buffedXuDraft),
+                      }),
+                    });
+                    return "Đã lưu số xu đã buff.";
+                  })
+                }
+              >
+                <Save size={17} />
+                Lưu xu buff
+              </button>
+            </div>
+          </div>
+
+          <div className="dataTableWrap">
+            <table className="dataTable">
+              <thead>
+                <tr>
+                  <th>Game</th>
+                  <th>Server</th>
+                  <th>Xu đã bán</th>
+                  <th>Tiền đã bán</th>
+                  <th>Xu đã nhập</th>
+                  <th>Tiền đã nhập xu</th>
+                  <th>Thu nhập</th>
+                </tr>
+              </thead>
+              <tbody>
+                {statsRows.map((row) => (
+                  <tr key={`${row.gameName}-${row.serverName}`}>
+                    <td>{row.gameName}</td>
+                    <td>{row.serverName}</td>
+                    <td>{formatXu(row.soldXu)}</td>
+                    <td>{formatVnd(row.soldMoney)}</td>
+                    <td>{formatXu(row.importedXu)}</td>
+                    <td>{formatVnd(row.importedMoney)}</td>
+                    <td>{formatSignedVnd(row.netIncome)}</td>
+                  </tr>
+                ))}
+                {statsRows.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="emptyCell">
+                      Chưa có dữ liệu thống kê trong khoảng ngày này.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </section>
       )}

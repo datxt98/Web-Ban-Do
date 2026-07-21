@@ -20,6 +20,15 @@ function listen(app) {
   });
 }
 
+function todayInputDate() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
 test("Bando API tạo đơn, khớp thanh toán và xác nhận giao hàng", async () => {
   const { server, baseUrl } = await listen(createApp({ serveFrontend: false }));
   try {
@@ -394,6 +403,142 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     assert.ok(historyPayload.coinTrades.some((trade) => trade.orderCode === buyPayload.order.orderCode));
     assert.ok(historyPayload.coinTrades.some((trade) => trade.orderCode === sellPayload.coinTrade.orderCode && trade.accountName === "NGUYEN VAN A" && trade.status === "payout_completed" && trade.payoutNotifiedAt));
   } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Bando API thong ke web gom tat ca game server va khoa sua xu buff", async () => {
+  const previousDevUsername = process.env.BANDO_DEV_ADMIN_USERNAME;
+  process.env.BANDO_DEV_ADMIN_USERNAME = "datxt998";
+  const { server, baseUrl } = await listen(createApp({ serveFrontend: false }));
+  const today = todayInputDate();
+  const statsUrl = `${baseUrl}/api/bando/statistics?fromDate=${today}&toDate=${today}`;
+  try {
+    const baselineResponse = await fetch(statsUrl);
+    assert.equal(baselineResponse.status, 200);
+    const baseline = await baselineResponse.json();
+
+    const configResponse = await fetch(`${baseUrl}/api/bando/bot/config`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        characterName: "StatsBot",
+        gameName: "Ninja 2D",
+        serverName: "S-Stats",
+        coinTrade: {
+          sell: { enabled: true, rate: 2.0 },
+          importXu: { enabled: true, rate: 2.5 },
+        },
+      }),
+    });
+    assert.equal(configResponse.status, 200);
+
+    const buyResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "StatsBuyer",
+        gameName: "Ninja 2D",
+        serverName: "S-Stats",
+        privateMessage: "muaxu 1000000",
+        coin: 5000000,
+      }),
+    });
+    assert.equal(buyResponse.status, 201);
+    const buyPayload = await buyResponse.json();
+    assert.equal(buyPayload.order.totalAmount, 5000);
+
+    const payResponse = await fetch(`${baseUrl}/api/bando/payments/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        paymentCode: buyPayload.order.paymentCode,
+        amount: buyPayload.order.totalAmount,
+        note: "stats payment",
+      }),
+    });
+    assert.equal(payResponse.status, 200);
+
+    const sellResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "StatsSeller",
+        gameName: "Ninja 2D",
+        serverName: "S-Stats",
+        privateMessage: "banxu 1000000",
+      }),
+    });
+    assert.equal(sellResponse.status, 200);
+    const sellPayload = await sellResponse.json();
+    assert.equal(sellPayload.coinTrade.totalAmount, 4000);
+
+    const receiveResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        orderCode: sellPayload.coinTrade.orderCode,
+        botName: "StatsBot",
+        receivedCoinAmount: 1000000,
+      }),
+    });
+    assert.equal(receiveResponse.status, 200);
+
+    const statsResponse = await fetch(statsUrl);
+    assert.equal(statsResponse.status, 200);
+    const stats = await statsResponse.json();
+    assert.ok(stats.buffedXuCanEdit);
+    assert.equal(stats.totals.soldXu - baseline.totals.soldXu, 1000000);
+    assert.equal(stats.totals.soldMoney - baseline.totals.soldMoney, 5000);
+    assert.equal(stats.totals.importedXu - baseline.totals.importedXu, 1000000);
+    assert.equal(stats.totals.importedMoney - baseline.totals.importedMoney, 4000);
+    assert.equal(stats.totals.netIncome - baseline.totals.netIncome, 1000);
+    assert.ok(stats.byServer.some((row) => row.gameName === "Ninja 2D" && row.serverName === "S-Stats"));
+
+    const buffResponse = await fetch(`${baseUrl}/api/bando/statistics/buffed-xu`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        fromDate: today,
+        toDate: today,
+        buffedXu: 123456789,
+      }),
+    });
+    assert.equal(buffResponse.status, 200);
+    const buffPayload = await buffResponse.json();
+    assert.equal(buffPayload.totals.buffedXu, 123456789);
+
+    process.env.BANDO_DEV_ADMIN_USERNAME = "other-admin";
+    const deniedResponse = await fetch(`${baseUrl}/api/bando/statistics/buffed-xu`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        fromDate: today,
+        toDate: today,
+        buffedXu: 1,
+      }),
+    });
+    assert.equal(deniedResponse.status, 403);
+
+    const resetConfigResponse = await fetch(`${baseUrl}/api/bando/bot/config`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        characterName: "ADMIN",
+        gameName: "Ninja Mobile",
+        serverName: "nso-local",
+        serverProfiles: [],
+      }),
+    });
+    assert.equal(resetConfigResponse.status, 200);
+  } finally {
+    if (previousDevUsername == null) {
+      delete process.env.BANDO_DEV_ADMIN_USERNAME;
+    } else {
+      process.env.BANDO_DEV_ADMIN_USERNAME = previousDevUsername;
+    }
     await new Promise((resolve) => server.close(resolve));
   }
 });

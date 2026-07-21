@@ -91,6 +91,87 @@ export async function getBandoRevenueStatsMysql(args = {}) {
   });
 }
 
+export async function getBandoWebStatisticsMysql(args = {}) {
+  return withBandoConnection(async (conn) => {
+    const range = normalizeStatsRange(args);
+    if (!range.ok) return range;
+
+    const [sellRows] = await conn.query(
+      `SELECT
+         COALESCE(NULLIF(game_name, ''), ?) AS game_name,
+         COALESCE(NULLIF(server_name, ''), 'default') AS server_name,
+         COUNT(*) AS sold_orders,
+         COALESCE(SUM(total_amount), 0) AS sold_money,
+         COALESCE(SUM(CASE WHEN item_code = ? THEN quantity ELSE 0 END), 0) AS sold_xu
+       FROM bando_orders
+       WHERE status IN ('paid', 'completed')
+         AND COALESCE(NULLIF(paid_at, ''), created_at) >= ?
+         AND COALESCE(NULLIF(paid_at, ''), created_at) < ?
+       GROUP BY COALESCE(NULLIF(game_name, ''), ?), COALESCE(NULLIF(server_name, ''), 'default')`,
+      [DEFAULT_GAME_NAME, COIN_ITEM_CODE, range.fromIso, range.toIso, DEFAULT_GAME_NAME],
+    );
+
+    const [importRows] = await conn.query(
+      `SELECT
+         COALESCE(NULLIF(game_name, ''), ?) AS game_name,
+         COALESCE(NULLIF(server_name, ''), 'default') AS server_name,
+         COUNT(*) AS imported_orders,
+         COALESCE(SUM(CASE WHEN received_coin_amount > 0 THEN received_coin_amount ELSE coin_amount END), 0) AS imported_xu,
+         COALESCE(SUM(total_amount), 0) AS imported_money
+       FROM bando_coin_trades
+       WHERE type = 'sell_xu'
+         AND status IN ('awaiting_payout_info', 'completed', 'payout_completed')
+         AND COALESCE(NULLIF(completed_at, ''), NULLIF(paid_at, ''), created_at) >= ?
+         AND COALESCE(NULLIF(completed_at, ''), NULLIF(paid_at, ''), created_at) < ?
+       GROUP BY COALESCE(NULLIF(game_name, ''), ?), COALESCE(NULLIF(server_name, ''), 'default')`,
+      [DEFAULT_GAME_NAME, range.fromIso, range.toIso, DEFAULT_GAME_NAME],
+    );
+
+    const [adjustmentRows] = await conn.query(
+      `SELECT *
+       FROM bando_stat_adjustments
+       WHERE from_date = ? AND to_date = ?
+       LIMIT 1`,
+      [range.fromDate, range.toDate],
+    );
+
+    return buildWebStatisticsResult({
+      ...range,
+      sellRows,
+      importRows,
+      adjustmentRow: adjustmentRows[0],
+      storage: "mysql",
+      user: args.user,
+    });
+  });
+}
+
+export async function upsertBandoBuffedXuMysql(args = {}) {
+  return withBandoConnection(async (conn) => {
+    const range = normalizeStatsRange(args);
+    if (!range.ok) return range;
+    const username = String(args.user?.username || args.username || "").trim().toLowerCase();
+    if (!canEditBuffedXu(username)) {
+      return { ok: false, error: "Chỉ tài khoản datxt998 được sửa số xu đã buff." };
+    }
+
+    const buffedXu = Math.max(0, Math.trunc(Number(args.buffedXu) || 0));
+    const now = new Date().toISOString();
+    await conn.execute(
+      `INSERT INTO bando_stat_adjustments (
+        from_date, to_date, buffed_xu, updated_by, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        buffed_xu = VALUES(buffed_xu),
+        updated_by = VALUES(updated_by),
+        updated_at = VALUES(updated_at)`,
+      [range.fromDate, range.toDate, buffedXu, username, now],
+    );
+
+    return getBandoWebStatisticsMysql({ ...range, user: args.user });
+  });
+}
+
 export async function getLatestBandoEventIdMysql() {
   return withBandoConnection(async (conn) => {
     const [rows] = await conn.query("SELECT COALESCE(MAX(id), 0) AS id FROM bando_events");
@@ -1111,6 +1192,17 @@ async function ensureBandoMysqlSchema(conn) {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
   );
   await conn.execute(
+    `CREATE TABLE IF NOT EXISTS bando_stat_adjustments (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      from_date DATE NOT NULL,
+      to_date DATE NOT NULL,
+      buffed_xu BIGINT NOT NULL DEFAULT 0,
+      updated_by VARCHAR(64) NOT NULL DEFAULT '',
+      updated_at VARCHAR(40) NOT NULL,
+      UNIQUE KEY bando_stat_adjustments_range_uq (from_date, to_date)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+  );
+  await conn.execute(
     `CREATE TABLE IF NOT EXISTS bando_bot_config (
       id TINYINT PRIMARY KEY,
       config_json JSON NOT NULL,
@@ -1725,6 +1817,140 @@ function buildRevenueStatsResult(fromIso, toIso, sellRow = {}, buyRow = {}) {
     netAmount: sell.totalAmount - buy.totalAmount,
     storage: "mysql",
   };
+}
+
+function buildWebStatisticsResult(args = {}) {
+  const rowsByScope = new Map();
+  const findScope = (gameName, serverName) => {
+    const normalizedGameName = normalizeGameName(gameName);
+    const normalizedServerName = String(serverName || "default").trim() || "default";
+    const key = `${normalizedGameName}\u0000${normalizedServerName}`;
+    if (!rowsByScope.has(key)) {
+      rowsByScope.set(key, {
+        gameName: normalizedGameName,
+        serverName: normalizedServerName,
+        soldOrders: 0,
+        soldXu: 0,
+        soldMoney: 0,
+        importedOrders: 0,
+        importedXu: 0,
+        importedMoney: 0,
+        netIncome: 0,
+      });
+    }
+    return rowsByScope.get(key);
+  };
+
+  for (const row of args.sellRows || []) {
+    const scope = findScope(row.game_name, row.server_name);
+    scope.soldOrders += toNumber(row.sold_orders, 0);
+    scope.soldXu += toNumber(row.sold_xu, 0);
+    scope.soldMoney += toNumber(row.sold_money, 0);
+  }
+
+  for (const row of args.importRows || []) {
+    const scope = findScope(row.game_name, row.server_name);
+    scope.importedOrders += toNumber(row.imported_orders, 0);
+    scope.importedXu += toNumber(row.imported_xu, 0);
+    scope.importedMoney += toNumber(row.imported_money, 0);
+  }
+
+  const byServer = Array.from(rowsByScope.values())
+    .map((row) => ({
+      ...row,
+      netIncome: row.soldMoney - row.importedMoney,
+    }))
+    .sort((a, b) => a.gameName.localeCompare(b.gameName) || a.serverName.localeCompare(b.serverName));
+
+  const totals = byServer.reduce(
+    (total, row) => ({
+      soldOrders: total.soldOrders + row.soldOrders,
+      soldXu: total.soldXu + row.soldXu,
+      soldMoney: total.soldMoney + row.soldMoney,
+      importedOrders: total.importedOrders + row.importedOrders,
+      importedXu: total.importedXu + row.importedXu,
+      importedMoney: total.importedMoney + row.importedMoney,
+      netIncome: total.netIncome + row.netIncome,
+      buffedXu: total.buffedXu,
+    }),
+    {
+      soldOrders: 0,
+      soldXu: 0,
+      soldMoney: 0,
+      importedOrders: 0,
+      importedXu: 0,
+      importedMoney: 0,
+      netIncome: 0,
+      buffedXu: toNumber(args.adjustmentRow?.buffed_xu, 0),
+    },
+  );
+
+  return {
+    ok: true,
+    fromDate: args.fromDate,
+    toDate: args.toDate,
+    fromIso: args.fromIso,
+    toIso: args.toIso,
+    totals,
+    byServer,
+    buffedXuCanEdit: canEditBuffedXu(args.user?.username),
+    adjustment: {
+      buffedXu: totals.buffedXu,
+      updatedBy: String(args.adjustmentRow?.updated_by || ""),
+      updatedAt: String(args.adjustmentRow?.updated_at || ""),
+    },
+    storage: args.storage || "mysql",
+  };
+}
+
+function normalizeStatsRange(args = {}) {
+  const today = vietnamDateInputValue();
+  const fromDate = normalizeStatsDate(args.fromDate) || today;
+  const toDate = normalizeStatsDate(args.toDate) || fromDate;
+  const fromMs = vietnamDateStartMs(fromDate);
+  const toMs = vietnamDateStartMs(toDate);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    return { ok: false, error: "Ngày thống kê không hợp lệ." };
+  }
+  if (fromMs > toMs) {
+    return { ok: false, error: "Ngày bắt đầu không được lớn hơn ngày kết thúc." };
+  }
+  return {
+    ok: true,
+    fromDate,
+    toDate,
+    fromIso: new Date(fromMs).toISOString(),
+    toIso: new Date(toMs + 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
+function normalizeStatsDate(value) {
+  const text = String(value || "").trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) return "";
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return "";
+  return text;
+}
+
+function vietnamDateInputValue(date = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function vietnamDateStartMs(dateText) {
+  return Date.parse(`${dateText}T00:00:00+07:00`);
+}
+
+function canEditBuffedXu(username) {
+  return String(username || "").trim().toLowerCase() === "datxt998";
 }
 
 async function buildTelegramCreatedEvent(conn, event) {
