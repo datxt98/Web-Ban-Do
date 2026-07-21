@@ -55,6 +55,7 @@ const emptyStatistics = {
     buffedXu: 0,
   },
   byServer: [],
+  buffedEntries: [],
   buffedXuCanEdit: false,
   adjustment: {
     buffedXu: 0,
@@ -497,6 +498,9 @@ export default function BandoAdmin() {
   const [statsToDate, setStatsToDate] = useState(todayDateInputValue());
   const [statistics, setStatistics] = useState(emptyStatistics);
   const [buffedXuDraft, setBuffedXuDraft] = useState("0");
+  const [buffedXuDateDraft, setBuffedXuDateDraft] = useState(todayDateInputValue());
+  const [buffedXuNoteDraft, setBuffedXuNoteDraft] = useState("");
+  const [editingBuffedEntry, setEditingBuffedEntry] = useState(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
@@ -526,6 +530,7 @@ export default function BandoAdmin() {
 
   const statsTotals = statistics?.totals ?? emptyStatistics.totals;
   const statsRows = statistics?.byServer ?? [];
+  const statsBuffedEntries = statistics?.buffedEntries ?? [];
 
   const gameOptions = useMemo(() => {
     const options = new Map(gameOptionsDefault.map((name) => [gameKey(name), name]));
@@ -639,7 +644,10 @@ export default function BandoAdmin() {
     try {
       const payload = await jsonFetch(`/api/bando/statistics${statisticsQuery(fromDate, toDate)}`);
       setStatistics(payload);
-      setBuffedXuDraft(String(payload?.totals?.buffedXu ?? 0));
+      setEditingBuffedEntry(null);
+      setBuffedXuDraft("0");
+      setBuffedXuDateDraft(toDate || todayDateInputValue());
+      setBuffedXuNoteDraft("");
       return payload;
     } finally {
       setStatsLoading(false);
@@ -788,6 +796,20 @@ export default function BandoAdmin() {
     setPaymentPrefixDraft("");
     setCallbackSignatureDraft("");
     setBankActiveDraft(true);
+  }
+
+  function editBuffedEntry(entry) {
+    setEditingBuffedEntry(entry);
+    setBuffedXuDraft(String(entry.amount ?? 0));
+    setBuffedXuDateDraft(entry.buffedDate || statsToDate || todayDateInputValue());
+    setBuffedXuNoteDraft(entry.note || "");
+  }
+
+  function resetBuffedDraft() {
+    setEditingBuffedEntry(null);
+    setBuffedXuDraft("0");
+    setBuffedXuDateDraft(statsToDate || todayDateInputValue());
+    setBuffedXuNoteDraft("");
   }
 
   function bankAccountBody() {
@@ -2123,12 +2145,32 @@ export default function BandoAdmin() {
             </h3>
             <div className="formGrid three">
               <label>
+                <span>Ngày buff</span>
+                <input
+                  type="date"
+                  value={buffedXuDateDraft}
+                  min={statsFromDate}
+                  max={statsToDate}
+                  onChange={(event) => setBuffedXuDateDraft(event.target.value)}
+                  disabled={!statistics?.buffedXuCanEdit}
+                />
+              </label>
+              <label>
                 <span>Số xu đã buff</span>
                 <input
                   value={buffedXuDraft}
                   onChange={(event) => setBuffedXuDraft(event.target.value)}
                   inputMode="numeric"
                   disabled={!statistics?.buffedXuCanEdit}
+                />
+              </label>
+              <label>
+                <span>Ghi chú</span>
+                <input
+                  value={buffedXuNoteDraft}
+                  onChange={(event) => setBuffedXuNoteDraft(event.target.value)}
+                  disabled={!statistics?.buffedXuCanEdit}
+                  placeholder="VD: Buff cho khách A"
                 />
               </label>
               <div className="statRangeNote">
@@ -2147,18 +2189,68 @@ export default function BandoAdmin() {
                     await jsonFetch("/api/bando/statistics/buffed-xu", {
                       method: "PATCH",
                       body: JSON.stringify({
+                        id: editingBuffedEntry?.id,
                         fromDate: statsFromDate,
                         toDate: statsToDate,
-                        buffedXu: Number(buffedXuDraft),
+                        buffedDate: buffedXuDateDraft,
+                        amount: Number(buffedXuDraft),
+                        note: buffedXuNoteDraft,
                       }),
                     });
-                    return "Đã lưu số xu đã buff.";
+                    return editingBuffedEntry ? "Đã lưu sửa dòng xu buff." : "Đã thêm lịch sử xu buff.";
                   })
                 }
               >
                 <Save size={17} />
-                Lưu xu buff
+                {editingBuffedEntry ? "Lưu sửa" : "Thêm lượt buff"}
               </button>
+              {editingBuffedEntry && (
+                <button className="toolButton" type="button" onClick={resetBuffedDraft}>
+                  Hủy sửa
+                </button>
+              )}
+            </div>
+            <div className="dataTableWrap">
+              <table className="dataTable">
+                <thead>
+                  <tr>
+                    <th>Ngày</th>
+                    <th>Số xu</th>
+                    <th>Ghi chú</th>
+                    <th>Người sửa</th>
+                    <th>Cập nhật</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {statsBuffedEntries.map((entry) => (
+                    <tr key={entry.id}>
+                      <td>{entry.buffedDate}</td>
+                      <td>{formatXu(entry.amount)}</td>
+                      <td>{entry.note || "-"}</td>
+                      <td>{entry.updatedBy || entry.createdBy || "-"}</td>
+                      <td>{entry.updatedAt || entry.createdAt || "-"}</td>
+                      <td className="rowActions">
+                        <button
+                          className="miniButton"
+                          disabled={!statistics?.buffedXuCanEdit}
+                          onClick={() => editBuffedEntry(entry)}
+                        >
+                          <Edit3 size={15} />
+                          Sửa
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {statsBuffedEntries.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="emptyCell">
+                        Chưa có lịch sử xu buff trong khoảng ngày này.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
 

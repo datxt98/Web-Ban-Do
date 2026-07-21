@@ -127,11 +127,21 @@ export async function getBandoWebStatisticsMysql(args = {}) {
       [DEFAULT_GAME_NAME, range.fromIso, range.toIso, DEFAULT_GAME_NAME],
     );
 
-    const [adjustmentRows] = await conn.query(
-      `SELECT *
-       FROM bando_stat_adjustments
-       WHERE from_date = ? AND to_date = ?
-       LIMIT 1`,
+    const [buffedRows] = await conn.query(
+      `SELECT
+         id,
+         DATE_FORMAT(buffed_date, '%Y-%m-%d') AS buffed_date,
+         game_name,
+         server_name,
+         amount,
+         note,
+         created_by,
+         created_at,
+         updated_by,
+         updated_at
+       FROM bando_buffed_xu_logs
+       WHERE buffed_date >= ? AND buffed_date <= ?
+       ORDER BY buffed_date DESC, id DESC`,
       [range.fromDate, range.toDate],
     );
 
@@ -139,7 +149,7 @@ export async function getBandoWebStatisticsMysql(args = {}) {
       ...range,
       sellRows,
       importRows,
-      adjustmentRow: adjustmentRows[0],
+      buffedRows,
       storage: "mysql",
       user: args.user,
     });
@@ -155,18 +165,32 @@ export async function upsertBandoBuffedXuMysql(args = {}) {
       return { ok: false, error: "Chỉ tài khoản datxt998 được sửa số xu đã buff." };
     }
 
-    const buffedXu = Math.max(0, Math.trunc(Number(args.buffedXu) || 0));
+    const buffedDate = normalizeStatsDate(args.buffedDate) || range.toDate;
+    if (buffedDate < range.fromDate || buffedDate > range.toDate) {
+      return { ok: false, error: "Ngày buff phải nằm trong khoảng thống kê đang chọn." };
+    }
+    const amount = Math.max(0, Math.trunc(Number(args.amount ?? args.buffedXu) || 0));
+    const note = String(args.note || "").trim();
     const now = new Date().toISOString();
-    await conn.execute(
-      `INSERT INTO bando_stat_adjustments (
-        from_date, to_date, buffed_xu, updated_by, updated_at
-      ) VALUES (?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        buffed_xu = VALUES(buffed_xu),
-        updated_by = VALUES(updated_by),
-        updated_at = VALUES(updated_at)`,
-      [range.fromDate, range.toDate, buffedXu, username, now],
-    );
+    const id = Math.max(0, Math.trunc(Number(args.id) || 0));
+    if (id > 0) {
+      const [rows] = await conn.query("SELECT id FROM bando_buffed_xu_logs WHERE id = ? LIMIT 1", [id]);
+      if (rows.length === 0) return { ok: false, error: "Không tìm thấy dòng xu buff cần sửa." };
+      await conn.execute(
+        `UPDATE bando_buffed_xu_logs
+         SET buffed_date = ?, amount = ?, note = ?, updated_by = ?, updated_at = ?
+         WHERE id = ?`,
+        [buffedDate, amount, note, username, now, id],
+      );
+    } else {
+      await conn.execute(
+        `INSERT INTO bando_buffed_xu_logs (
+          buffed_date, game_name, server_name, amount, note,
+          created_by, created_at, updated_by, updated_at
+        ) VALUES (?, '', '', ?, ?, ?, ?, ?, ?)`,
+        [buffedDate, amount, note, username, now, username, now],
+      );
+    }
 
     return getBandoWebStatisticsMysql({ ...range, user: args.user });
   });
@@ -1203,6 +1227,23 @@ async function ensureBandoMysqlSchema(conn) {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
   );
   await conn.execute(
+    `CREATE TABLE IF NOT EXISTS bando_buffed_xu_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      buffed_date DATE NOT NULL,
+      game_name VARCHAR(64) NOT NULL DEFAULT '',
+      server_name VARCHAR(96) NOT NULL DEFAULT '',
+      amount BIGINT NOT NULL DEFAULT 0,
+      note TEXT NOT NULL,
+      created_by VARCHAR(64) NOT NULL DEFAULT '',
+      created_at VARCHAR(40) NOT NULL,
+      updated_by VARCHAR(64) NOT NULL DEFAULT '',
+      updated_at VARCHAR(40) NOT NULL,
+      legacy_key VARCHAR(128) NULL,
+      UNIQUE KEY bando_buffed_xu_logs_legacy_uq (legacy_key),
+      KEY bando_buffed_xu_logs_date_idx (buffed_date)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+  );
+  await conn.execute(
     `CREATE TABLE IF NOT EXISTS bando_bot_config (
       id TINYINT PRIMARY KEY,
       config_json JSON NOT NULL,
@@ -1235,6 +1276,10 @@ async function ensureBandoMysqlSchema(conn) {
   await ensureColumn(conn, "game_servers", "socket_port_web", "VARCHAR(255) NULL");
   await ensureColumn(conn, "game_servers", "socket_key_web", "VARCHAR(255) NULL");
   await ensureColumn(conn, "game_servers", "day_open", "VARCHAR(40) NULL");
+  await ensureColumn(conn, "bando_buffed_xu_logs", "legacy_key", "VARCHAR(128) NULL");
+  await ensureUniqueIndex(conn, "bando_buffed_xu_logs", "bando_buffed_xu_logs_legacy_uq", "legacy_key");
+  await ensureIndex(conn, "bando_buffed_xu_logs", "bando_buffed_xu_logs_date_idx", "buffed_date");
+  await migrateLegacyBuffedXuAdjustments(conn);
   await dropIndexIfExists(conn, "bando_items", "bando_items_item_id_uq");
   await dropIndexIfExists(conn, "game_servers", "code");
   await ensureIndex(conn, "bando_items", "bando_items_game_server_idx", "game_name, server_name");
@@ -1335,6 +1380,32 @@ async function migrateLegacyGameServerGameNames(conn) {
      SET game_name = ?
      WHERE game_name IS NULL OR TRIM(game_name) = ''`,
     [DEFAULT_GAME_NAME],
+  );
+}
+
+async function migrateLegacyBuffedXuAdjustments(conn) {
+  await conn.execute(
+    `INSERT INTO bando_buffed_xu_logs (
+      buffed_date, game_name, server_name, amount, note,
+      created_by, created_at, updated_by, updated_at, legacy_key
+    )
+    SELECT
+      from_date,
+      '',
+      '',
+      buffed_xu,
+      CONCAT('Du lieu cu tu khoang ', from_date, ' den ', to_date),
+      COALESCE(NULLIF(updated_by, ''), 'legacy'),
+      COALESCE(NULLIF(updated_at, ''), UTC_TIMESTAMP()),
+      COALESCE(NULLIF(updated_by, ''), 'legacy'),
+      COALESCE(NULLIF(updated_at, ''), UTC_TIMESTAMP()),
+      CONCAT('stat-adjustment:', id)
+    FROM bando_stat_adjustments
+    WHERE buffed_xu > 0
+    ON DUPLICATE KEY UPDATE
+      amount = VALUES(amount),
+      updated_by = VALUES(updated_by),
+      updated_at = VALUES(updated_at)`,
   );
 }
 
@@ -1862,6 +1933,10 @@ function buildWebStatisticsResult(args = {}) {
     }))
     .sort((a, b) => a.gameName.localeCompare(b.gameName) || a.serverName.localeCompare(b.serverName));
 
+  const buffedEntries = (args.buffedRows || []).map(mapBuffedXuLog);
+  const buffedXuTotal = buffedEntries.reduce((sum, entry) => sum + entry.amount, 0);
+  const latestBuffedEntry = buffedEntries[0] || null;
+
   const totals = byServer.reduce(
     (total, row) => ({
       soldOrders: total.soldOrders + row.soldOrders,
@@ -1881,7 +1956,7 @@ function buildWebStatisticsResult(args = {}) {
       importedXu: 0,
       importedMoney: 0,
       netIncome: 0,
-      buffedXu: toNumber(args.adjustmentRow?.buffed_xu, 0),
+      buffedXu: buffedXuTotal,
     },
   );
 
@@ -1893,13 +1968,29 @@ function buildWebStatisticsResult(args = {}) {
     toIso: args.toIso,
     totals,
     byServer,
+    buffedEntries,
     buffedXuCanEdit: canEditBuffedXu(args.user?.username),
     adjustment: {
       buffedXu: totals.buffedXu,
-      updatedBy: String(args.adjustmentRow?.updated_by || ""),
-      updatedAt: String(args.adjustmentRow?.updated_at || ""),
+      updatedBy: latestBuffedEntry?.updatedBy || latestBuffedEntry?.createdBy || "",
+      updatedAt: latestBuffedEntry?.updatedAt || latestBuffedEntry?.createdAt || "",
     },
     storage: args.storage || "mysql",
+  };
+}
+
+function mapBuffedXuLog(row) {
+  return {
+    id: toNumber(row.id, 0),
+    buffedDate: String(row.buffed_date ?? "").slice(0, 10),
+    gameName: String(row.game_name ?? ""),
+    serverName: String(row.server_name ?? ""),
+    amount: toNumber(row.amount, 0),
+    note: String(row.note ?? ""),
+    createdBy: String(row.created_by ?? ""),
+    createdAt: String(row.created_at ?? ""),
+    updatedBy: String(row.updated_by ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
   };
 }
 

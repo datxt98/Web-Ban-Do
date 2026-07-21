@@ -65,6 +65,7 @@ const memoryState = {
   gameServers: [],
   adminUsers: [],
   statAdjustments: [],
+  buffedXuLogs: [],
   events: [
     {
       id: 1,
@@ -90,6 +91,7 @@ let memoryBankAccountId = 1;
 let memoryGameServerId = 1;
 let memoryAdminUserId = 1;
 let memoryEventId = 2;
+let memoryBuffedXuLogId = 1;
 
 export function getConfiguredBotToken() {
   return process.env.BANDO_BOT_TOKEN?.trim() ?? "";
@@ -248,20 +250,32 @@ export async function updateBandoBuffedXu(args = {}) {
   const mysqlResult = await upsertBandoBuffedXuMysql({ ...range, buffedXu: args.buffedXu, user: args.user });
   if (mysqlResult) return mysqlResult;
 
-  const key = statsAdjustmentKey(range.fromDate, range.toDate);
+  const buffedDate = normalizeStatsDate(args.buffedDate) || range.toDate;
+  if (buffedDate < range.fromDate || buffedDate > range.toDate) {
+    return { ok: false, error: "Ngày buff phải nằm trong khoảng thống kê đang chọn." };
+  }
+  const id = Math.max(0, Math.trunc(Number(args.id) || 0));
   const now = new Date().toISOString();
-  const buffedXu = Math.max(0, Math.trunc(Number(args.buffedXu) || 0));
-  const existing = memoryState.statAdjustments.find((entry) => entry.key === key);
-  if (existing) {
-    existing.buffedXu = buffedXu;
+  const amount = Math.max(0, Math.trunc(Number(args.amount ?? args.buffedXu) || 0));
+  const note = String(args.note || "").trim();
+  if (id > 0) {
+    const existing = memoryState.buffedXuLogs.find((entry) => entry.id === id);
+    if (!existing) return { ok: false, error: "Không tìm thấy dòng xu buff cần sửa." };
+    existing.buffedDate = buffedDate;
+    existing.amount = amount;
+    existing.note = note;
     existing.updatedBy = username;
     existing.updatedAt = now;
   } else {
-    memoryState.statAdjustments.push({
-      key,
-      fromDate: range.fromDate,
-      toDate: range.toDate,
-      buffedXu,
+    memoryState.buffedXuLogs.unshift({
+      id: memoryBuffedXuLogId++,
+      buffedDate,
+      gameName: "",
+      serverName: "",
+      amount,
+      note,
+      createdBy: username,
+      createdAt: now,
       updatedBy: username,
       updatedAt: now,
     });
@@ -1246,6 +1260,7 @@ function cloneMemoryState() {
     bankAccounts: memoryState.bankAccounts.map((account) => ({ ...account })),
     gameServers: memoryState.gameServers.map((server) => ({ ...server })),
     statAdjustments: memoryState.statAdjustments.map((entry) => ({ ...entry })),
+    buffedXuLogs: memoryState.buffedXuLogs.map((entry) => ({ ...entry })),
     events: memoryState.events.map((event) => ({ ...event })),
     storage: "memory",
   };
@@ -1355,7 +1370,12 @@ function buildWebStatisticsFromMemory(args = {}) {
       netIncome: row.soldMoney - row.importedMoney,
     }))
     .sort((a, b) => a.gameName.localeCompare(b.gameName) || a.serverName.localeCompare(b.serverName));
-  const adjustment = findStatsAdjustment(args.fromDate, args.toDate);
+  const buffedEntries = memoryState.buffedXuLogs
+    .filter((entry) => entry.buffedDate >= args.fromDate && entry.buffedDate <= args.toDate)
+    .map((entry) => ({ ...entry }))
+    .sort((a, b) => String(b.buffedDate).localeCompare(String(a.buffedDate)) || b.id - a.id);
+  const buffedXuTotal = buffedEntries.reduce((sum, entry) => sum + positiveInteger(entry.amount), 0);
+  const latestBuffedEntry = buffedEntries[0] || null;
   const totals = byServer.reduce(
     (total, row) => ({
       soldOrders: total.soldOrders + row.soldOrders,
@@ -1375,7 +1395,7 @@ function buildWebStatisticsFromMemory(args = {}) {
       importedXu: 0,
       importedMoney: 0,
       netIncome: 0,
-      buffedXu: positiveInteger(adjustment?.buffedXu),
+      buffedXu: buffedXuTotal,
     },
   );
 
@@ -1387,11 +1407,12 @@ function buildWebStatisticsFromMemory(args = {}) {
     toIso: args.toIso,
     totals,
     byServer,
+    buffedEntries,
     buffedXuCanEdit: canEditBuffedXu(args.user?.username),
     adjustment: {
       buffedXu: totals.buffedXu,
-      updatedBy: adjustment?.updatedBy || "",
-      updatedAt: adjustment?.updatedAt || "",
+      updatedBy: latestBuffedEntry?.updatedBy || latestBuffedEntry?.createdBy || "",
+      updatedAt: latestBuffedEntry?.updatedAt || latestBuffedEntry?.createdAt || "",
     },
     storage: "memory",
   };

@@ -502,12 +502,49 @@ test("Bando API thong ke web gom tat ca game server va khoa sua xu buff", async 
       body: JSON.stringify({
         fromDate: today,
         toDate: today,
-        buffedXu: 123456789,
+        buffedDate: today,
+        amount: 123456789,
+        note: "buff lan 1",
       }),
     });
     assert.equal(buffResponse.status, 200);
     const buffPayload = await buffResponse.json();
     assert.equal(buffPayload.totals.buffedXu, 123456789);
+    assert.equal(buffPayload.buffedEntries.length, 1);
+    assert.equal(buffPayload.buffedEntries[0].note, "buff lan 1");
+
+    const secondBuffResponse = await fetch(`${baseUrl}/api/bando/statistics/buffed-xu`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        fromDate: today,
+        toDate: today,
+        buffedDate: today,
+        amount: 11,
+        note: "buff lan 2",
+      }),
+    });
+    assert.equal(secondBuffResponse.status, 200);
+    const secondBuffPayload = await secondBuffResponse.json();
+    assert.equal(secondBuffPayload.totals.buffedXu, 123456800);
+    assert.equal(secondBuffPayload.buffedEntries.length, 2);
+
+    const editBuffResponse = await fetch(`${baseUrl}/api/bando/statistics/buffed-xu`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: buffPayload.buffedEntries[0].id,
+        fromDate: today,
+        toDate: today,
+        buffedDate: today,
+        amount: 100,
+        note: "buff da sua",
+      }),
+    });
+    assert.equal(editBuffResponse.status, 200);
+    const editBuffPayload = await editBuffResponse.json();
+    assert.equal(editBuffPayload.totals.buffedXu, 111);
+    assert.ok(editBuffPayload.buffedEntries.some((entry) => entry.amount === 100 && entry.note === "buff da sua"));
 
     process.env.BANDO_DEV_ADMIN_USERNAME = "other-admin";
     const deniedResponse = await fetch(`${baseUrl}/api/bando/statistics/buffed-xu`, {
