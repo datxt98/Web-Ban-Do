@@ -157,7 +157,7 @@ export function buildHelpReplies(items) {
   if (examples.length === 0) {
     return [
       "Lenh BOT: chat 'xem' de xem bang gia, 'muaxu <so xu>' de mua xu, 'banxu <so xu>' de ban xu cho BOT.",
-      "Hien gian hang chua co vat pham. Admin can them item va dat gia tren web.",
+      "Shop dang chua ban vat pham khac.",
     ];
   }
 
@@ -173,7 +173,7 @@ export function buildCatalogReplies(items, stockByItemId = new Map(), coinTradeC
   const replies = buildCoinCatalogReplies(coinTradeConfig, botCoinAmount);
 
   if (activeItems.length === 0) {
-    replies.push("Hien BOT chua cau hinh vat pham nao de ban.");
+    replies.push("Shop dang chua ban vat pham khac.");
     return replies;
   }
 
@@ -294,6 +294,7 @@ function buildCoinCatalogReplies(coinTradeConfig, botCoinAmount) {
     replies.push(
       `Mua xu cua BOT gia: 1.000 VND = ${formatXu(coinsPer1000Vnd(sell.rate))}. Lenh: muaxu <so xu>.`,
     );
+    replies.push("Vi du: muaxu 1000000 la mua 1m xu.");
   } else {
     replies.push("Mua Xu: dang tat tren web.");
   }

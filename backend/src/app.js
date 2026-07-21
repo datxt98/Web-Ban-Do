@@ -261,7 +261,10 @@ export function createApp(options = {}) {
     const authError = validateBankWebhookAuth(req, { bankAccounts: state.bankAccounts });
     if (authError) return res.status(401).json({ ok: false, error: authError });
 
-    const result = await handleBankPaymentPayload(req.body, { bankAccounts: state.bankAccounts });
+    const result = await handleBankPaymentPayload(req.body, {
+      bankAccounts: state.bankAccounts,
+      bankSignature: req.headers.signature,
+    });
     return res.json(result);
   }));
 

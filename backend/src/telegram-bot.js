@@ -298,7 +298,10 @@ function buildPaymentConfirmedMessage(order, bankTransaction, note) {
   lines.push("Trạng thái: Đã nhận thanh toán");
   lines.push(`Nội dung CK: ${h(order.paymentCode)}`);
 
-  if (bankTransaction?.bankAccount) {
+  const orderBankAccount = orderPaymentBankAccount(order);
+  if (orderBankAccount) {
+    lines.push(`TK shop nhận: ${formatBankAccount(orderBankAccount)}`);
+  } else if (bankTransaction?.bankAccount) {
     lines.push(`TK shop nhận: ${formatBankAccount(bankTransaction.bankAccount)}`);
   }
   if (bankTransaction?.transactionId) {
@@ -315,6 +318,22 @@ function buildPaymentConfirmedMessage(order, bankTransaction, note) {
   }
 
   return lines.join("\n");
+}
+
+function orderPaymentBankAccount(order) {
+  if (!order) return null;
+  if (order.bankAccount) return order.bankAccount;
+
+  const bankName = String(order.bankName || "").trim();
+  const accountNumber = String(order.accountNumber || "").trim();
+  const accountName = String(order.accountName || "").trim();
+  if (!bankName && !accountNumber && !accountName) return null;
+  return {
+    bankName,
+    bankCode: String(order.bankCode || ""),
+    accountNumber,
+    accountName,
+  };
 }
 
 async function buildPayoutVietQrNotification(event) {

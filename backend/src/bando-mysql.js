@@ -135,8 +135,9 @@ export async function insertBandoOrderMysql(order) {
     await conn.execute(
       `INSERT INTO bando_orders (
         order_code, payment_code, character_name, game_name, server_name, item_code, item_name,
-        quantity, unit_price, total_amount, status, private_message, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        quantity, unit_price, total_amount, status, private_message, bank_name, bank_code,
+        account_number, account_name, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         order.orderCode,
         order.paymentCode,
@@ -150,6 +151,10 @@ export async function insertBandoOrderMysql(order) {
         order.totalAmount,
         order.status,
         order.privateMessage,
+        order.bankName || "",
+        order.bankCode || "",
+        order.accountNumber || "",
+        order.accountName || "",
         order.createdAt,
       ],
     );
@@ -207,7 +212,7 @@ export async function confirmPaymentMysql(paymentCode, amount, note) {
       return { ok: false, error: "Không tìm thấy mã giao dịch." };
     }
 
-    const order = mapOrder(rows[0]);
+    const order = await attachPaymentBankAccount(conn, mapOrder(rows[0]));
     if (order.status === "completed") {
       if (order.totalAmount === amount) {
         return { ok: true, order, alreadyCompleted: true };
@@ -1013,6 +1018,10 @@ async function ensureBandoMysqlSchema(conn) {
       total_amount INT NOT NULL,
       status VARCHAR(32) NOT NULL DEFAULT 'awaiting_payment',
       private_message TEXT NOT NULL,
+      bank_name VARCHAR(96) NOT NULL DEFAULT '',
+      bank_code VARCHAR(32) NOT NULL DEFAULT '',
+      account_number VARCHAR(64) NOT NULL DEFAULT '',
+      account_name VARCHAR(128) NOT NULL DEFAULT '',
       created_at VARCHAR(40) NOT NULL,
       paid_at VARCHAR(40) NULL,
       delivered_at VARCHAR(40) NULL,
@@ -1115,6 +1124,10 @@ async function ensureBandoMysqlSchema(conn) {
   await ensureColumn(conn, "bando_items", "server_name", "VARCHAR(96) NOT NULL DEFAULT 'default'");
   await ensureColumn(conn, "bando_items", "buy_name", "VARCHAR(96) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_orders", "game_name", "VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile'");
+  await ensureColumn(conn, "bando_orders", "bank_name", "VARCHAR(96) NOT NULL DEFAULT ''");
+  await ensureColumn(conn, "bando_orders", "bank_code", "VARCHAR(32) NOT NULL DEFAULT ''");
+  await ensureColumn(conn, "bando_orders", "account_number", "VARCHAR(64) NOT NULL DEFAULT ''");
+  await ensureColumn(conn, "bando_orders", "account_name", "VARCHAR(128) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_inventory", "game_name", "VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile'");
   await ensureColumn(conn, "bando_coin_trades", "game_name", "VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile'");
   await ensureColumn(conn, "bando_coin_trades", "received_coin_amount", "INT NOT NULL DEFAULT 0");
@@ -1598,6 +1611,11 @@ function mapOrder(row) {
     totalAmount: toNumber(row.total_amount, 0),
     status: String(row.status ?? "awaiting_payment"),
     privateMessage: String(row.private_message ?? ""),
+    bankName: String(row.bank_name ?? ""),
+    bankCode: String(row.bank_code ?? ""),
+    accountNumber: String(row.account_number ?? ""),
+    accountName: String(row.account_name ?? ""),
+    bankAccount: bankAccountFromColumns(row),
     createdAt: String(row.created_at ?? ""),
     paidAt: row.paid_at == null ? null : String(row.paid_at),
     deliveredAt: row.delivered_at == null ? null : String(row.delivered_at),
@@ -1625,6 +1643,19 @@ function mapCoinTrade(row) {
     paidAt: row.paid_at == null ? null : String(row.paid_at),
     completedAt: row.completed_at == null ? null : String(row.completed_at),
     payoutNotifiedAt: row.payout_notified_at == null ? null : String(row.payout_notified_at),
+  };
+}
+
+function bankAccountFromColumns(row) {
+  const bankName = String(row.bank_name ?? "").trim();
+  const accountNumber = String(row.account_number ?? "").trim();
+  const accountName = String(row.account_name ?? "").trim();
+  if (!bankName && !accountNumber && !accountName) return null;
+  return {
+    bankName,
+    bankCode: String(row.bank_code ?? ""),
+    accountNumber,
+    accountName,
   };
 }
 
@@ -1708,7 +1739,7 @@ async function buildTelegramCreatedEvent(conn, event) {
       type: "item_order_created",
       payload: {
         order,
-        bankAccount: await findBankAccountForPaymentCode(conn, order.paymentCode),
+        bankAccount: order.bankAccount || await findBankAccountForPaymentCode(conn, order.paymentCode),
       },
       createdAt: event.createdAt,
     };
@@ -1718,13 +1749,14 @@ async function buildTelegramCreatedEvent(conn, event) {
     const order = await findOrderForTelegram(conn, orderCode);
     const coinTrade = await findCoinTradeForTelegram(conn, orderCode);
     if (!order || !coinTrade) return null;
+    const bankAccount = order.bankAccount || coinTradeBankAccount(coinTrade) || await findBankAccountForPaymentCode(conn, order.paymentCode);
     return {
       id: event.id,
       type: "coin_buy_order_created",
       payload: {
-        order,
+        order: order.bankAccount ? order : { ...order, bankAccount },
         coinTrade,
-        bankAccount: await findBankAccountForPaymentCode(conn, order.paymentCode),
+        bankAccount,
       },
       createdAt: event.createdAt,
     };
@@ -1759,6 +1791,28 @@ async function findOrderForTelegram(conn, orderCode) {
 async function findCoinTradeForTelegram(conn, orderCode) {
   const [rows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [orderCode]);
   return rows[0] ? mapCoinTrade(rows[0]) : null;
+}
+
+async function attachPaymentBankAccount(conn, order) {
+  if (!order || order.bankAccount || order.itemCode !== COIN_ITEM_CODE) return order;
+
+  const coinTrade = await findCoinTradeForTelegram(conn, order.orderCode);
+  const bankAccount = coinTradeBankAccount(coinTrade);
+  return bankAccount ? { ...order, bankAccount } : order;
+}
+
+function coinTradeBankAccount(coinTrade) {
+  if (!coinTrade) return null;
+  const bankName = String(coinTrade.bankName || "").trim();
+  const accountNumber = String(coinTrade.accountNumber || "").trim();
+  const accountName = String(coinTrade.accountName || "").trim();
+  if (!bankName && !accountNumber && !accountName) return null;
+  return {
+    bankName,
+    bankCode: "",
+    accountNumber,
+    accountName,
+  };
 }
 
 async function findBankAccountForPaymentCode(conn, paymentCode) {

@@ -1,7 +1,7 @@
 import { confirmBandoPayment } from "./bando-storage.js";
 import { emitBandoEvent } from "./bando-events.js";
 
-const PAYMENT_CODE_PATTERN = /\bBD[A-Z0-9]{4,10}\b/i;
+const PAYMENT_CODE_GLOBAL_PATTERN = /\bBD[A-Z0-9]{4,10}\b/gi;
 const UNMATCHED_BANK_CACHE_MS = 6 * 60 * 60 * 1000;
 const ARRAY_KEYS = [
   "TranList",
@@ -134,7 +134,7 @@ export async function handleBankPaymentPayload(payload, options = {}) {
   let ignored = 0;
 
   for (const transaction of transactions) {
-    const dedupeKey = transaction.transactionId || `${transaction.paymentCode}|${transaction.amount}|${transaction.description}`;
+    const dedupeKey = transaction.transactionId || `${transaction.paymentCodes.join(",")}|${transaction.amount}|${transaction.description}`;
     if (dedupeKey && seen.has(dedupeKey)) continue;
     if (dedupeKey) seen.add(dedupeKey);
 
@@ -157,19 +157,7 @@ export async function handleBankPaymentPayload(payload, options = {}) {
       continue;
     }
 
-    const result = await confirmBandoPayment({
-      paymentCode: transaction.paymentCode,
-      amount: transaction.amount,
-      note: buildBankNote(transaction),
-      bankTransaction: {
-        transactionId: transaction.transactionId,
-        paymentCode: transaction.paymentCode,
-        amount: transaction.amount,
-        description: transaction.description,
-        type: transaction.type,
-        bankAccount: transaction.bankAccount,
-      },
-    });
+    const result = await confirmTransactionPayment(transaction);
 
     if (result.ok) {
       matched += 1;
@@ -183,9 +171,9 @@ export async function handleBankPaymentPayload(payload, options = {}) {
       });
     } else {
       rejected += 1;
-      results.push(toPublicTransactionResult(transaction, "rejected", result.error));
+      results.push(toPublicTransactionResult({ ...transaction, paymentCode: result.paymentCode || transaction.paymentCode }, "rejected", result.error));
       if (isMissingPaymentCodeResult(result)) {
-        notifyUnmatchedIncomingTransaction(transaction, result.error);
+        notifyUnmatchedIncomingTransaction({ ...transaction, paymentCode: result.paymentCode || transaction.paymentCode }, result.error);
       }
     }
   }
@@ -212,8 +200,9 @@ function normalizeBankTransaction(entry, options = {}) {
   const description = buildDescriptionText(entry);
   const type = String(pickFirst(entry, TYPE_KEYS) ?? "").trim();
   const transactionId = String(pickFirst(entry, ID_KEYS) ?? "").trim();
-  const paymentCode = extractPaymentCode(entry, description, options.bankAccounts);
-  const bankAccount = matchBankAccount(entry, description, paymentCode, options.bankAccounts);
+  const paymentCodes = extractPaymentCodeCandidates(entry, description, options.bankAccounts);
+  const paymentCode = paymentCodes[0] || "";
+  const bankAccount = matchBankAccount(entry, description, paymentCode, options.bankAccounts, options);
   const senderBankName = String(pickFirst(entry, SENDER_BANK_KEYS) ?? "").trim();
   const senderAccount = String(pickFirst(entry, SENDER_ACCOUNT_KEYS) ?? "").trim();
   const senderName = String(pickFirst(entry, SENDER_NAME_KEYS) ?? "").trim();
@@ -222,6 +211,7 @@ function normalizeBankTransaction(entry, options = {}) {
   return {
     transactionId,
     paymentCode,
+    paymentCodes,
     amount,
     description,
     type,
@@ -233,6 +223,41 @@ function normalizeBankTransaction(entry, options = {}) {
     incoming: isIncomingTransaction(type, amount, entry),
     raw: entry,
   };
+}
+
+async function confirmTransactionPayment(transaction) {
+  const paymentCodes = transaction.paymentCodes.length > 0 ? transaction.paymentCodes : [transaction.paymentCode].filter(Boolean);
+  let missingResult = null;
+
+  for (const paymentCode of paymentCodes) {
+    const attempt = { ...transaction, paymentCode };
+    const result = await confirmBandoPayment({
+      paymentCode,
+      amount: transaction.amount,
+      note: buildBankNote(attempt),
+      bankTransaction: {
+        transactionId: transaction.transactionId,
+        paymentCode,
+        amount: transaction.amount,
+        description: transaction.description,
+        type: transaction.type,
+        bankAccount: transaction.bankAccount,
+      },
+    });
+
+    if (result.ok) {
+      return { ...result, paymentCode };
+    }
+
+    if (isMissingPaymentCodeResult(result)) {
+      missingResult = { ...result, paymentCode };
+      continue;
+    }
+
+    return { ...result, paymentCode };
+  }
+
+  return missingResult || { ok: false, error: "Khong tim thay ma giao dich.", paymentCode: transaction.paymentCode };
 }
 
 function collectTransactionCandidates(payload, depth = 0) {
@@ -254,19 +279,42 @@ function collectTransactionCandidates(payload, depth = 0) {
   return nested.length > 0 ? nested : [payload];
 }
 
-function extractPaymentCode(entry, description, bankAccounts = []) {
+function extractPaymentCodeCandidates(entry, description, bankAccounts = []) {
+  const candidates = [];
   const direct = String(pickFirst(entry, ["paymentCode", "orderCode", "code"]) ?? "").trim();
-  const prefixedDirect = extractPrefixedPaymentCode(direct, bankAccounts);
-  if (prefixedDirect) return prefixedDirect;
+  const searchableText = buildSearchableTransactionText(entry, description);
+  addPaymentCodeMatches(candidates, direct);
+  addPaymentCodeMatches(candidates, searchableText);
+  addPaymentCodeCandidate(candidates, extractPrefixedPaymentCode(direct, bankAccounts));
+  addPaymentCodeCandidate(candidates, extractPrefixedPaymentCode(description, bankAccounts));
+  return candidates;
+}
 
-  const directMatch = direct.match(PAYMENT_CODE_PATTERN);
-  if (directMatch) return directMatch[0].toUpperCase();
+function buildSearchableTransactionText(entry, description) {
+  return [description, ...collectScalarText(entry)].map((value) => String(value || "").trim()).filter(Boolean).join(" | ");
+}
 
-  const prefixedDescription = extractPrefixedPaymentCode(description, bankAccounts);
-  if (prefixedDescription) return prefixedDescription;
+function collectScalarText(value, depth = 0) {
+  if (depth > 3 || value == null) return [];
+  if (typeof value === "string" || typeof value === "number") return [String(value)];
+  if (typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap((entry) => collectScalarText(entry, depth + 1));
+  return Object.values(value).flatMap((entry) => collectScalarText(entry, depth + 1));
+}
 
-  const descriptionMatch = String(description || "").match(PAYMENT_CODE_PATTERN);
-  return descriptionMatch ? descriptionMatch[0].toUpperCase() : "";
+function addPaymentCodeMatches(candidates, text) {
+  const source = String(text || "");
+  if (!source) return;
+
+  for (const match of source.matchAll(PAYMENT_CODE_GLOBAL_PATTERN)) {
+    addPaymentCodeCandidate(candidates, match[0]);
+  }
+}
+
+function addPaymentCodeCandidate(candidates, value) {
+  const code = String(value || "").trim().toUpperCase();
+  if (!code || candidates.includes(code)) return;
+  candidates.push(code);
 }
 
 function extractPrefixedPaymentCode(text, bankAccounts = []) {
@@ -291,28 +339,46 @@ function extractPrefixedPaymentCode(text, bankAccounts = []) {
   return "";
 }
 
-function matchBankAccount(entry, description, paymentCode, bankAccounts = []) {
+function matchBankAccount(entry, description, paymentCode, bankAccounts = [], options = {}) {
   const accounts = Array.isArray(bankAccounts) ? bankAccounts.filter(Boolean) : [];
   if (accounts.length === 0) return null;
+
+  const bankSignature = String(options.bankSignature || "").trim();
+  if (bankSignature) {
+    const signatureMatches = accounts.filter((account) => String(account.callbackSignature || "").trim() === bankSignature);
+    if (signatureMatches.length === 1) return publicBankAccount(signatureMatches[0]);
+  }
+
+  const directReceiverText = RECEIVER_ACCOUNT_KEYS
+    .map((key) => pickCaseInsensitive(entry, key))
+    .map((value) => String(value || ""))
+    .join(" ");
+  const byDirectReceiver = findBankAccountByNumber(accounts, directReceiverText);
+  if (byDirectReceiver) return byDirectReceiver;
+
+  const accountText = [directReceiverText, description].map((value) => String(value || "")).join(" ");
+  const byAccountNumber = findBankAccountByNumber(accounts, accountText);
+  if (byAccountNumber) return byAccountNumber;
 
   const source = `${description || ""} ${paymentCode || ""}`.toUpperCase();
   for (const account of accounts) {
     const prefix = normalizePaymentPrefix(account?.paymentPrefix);
-    if (prefix && source.includes(prefix)) return publicBankAccount(account);
+    if (prefix.length >= 4 && source.includes(prefix)) return publicBankAccount(account);
   }
 
-  const accountText = [
-    pickFirst(entry, ["accountNo", "accountNumber", "beneficiaryAccount", "toAccount", "receiverAccount"]),
-    description,
-  ].map((value) => String(value || "")).join(" ");
-  for (const account of accounts) {
-    const accountNumber = String(account.accountNumber || "").trim();
-    if (accountNumber && accountText.includes(accountNumber)) return publicBankAccount(account);
-  }
-
-  const activeAccounts = accounts.filter((account) => account.active !== false);
-  if (activeAccounts.length === 1) return publicBankAccount(activeAccounts[0]);
   if (accounts.length === 1) return publicBankAccount(accounts[0]);
+  return null;
+}
+
+function findBankAccountByNumber(accounts, text) {
+  const sourceDigits = normalizeAccountNumber(text);
+  if (!sourceDigits) return null;
+
+  for (const account of accounts) {
+    const accountNumber = normalizeAccountNumber(account.accountNumber);
+    if (accountNumber && sourceDigits.includes(accountNumber)) return publicBankAccount(account);
+  }
+
   return null;
 }
 
@@ -349,9 +415,11 @@ function toPublicTransactionResult(transaction, status, reason = "") {
     reason,
     transactionId: transaction.transactionId,
     paymentCode: transaction.paymentCode,
+    paymentCodes: transaction.paymentCodes,
     amount: transaction.amount,
     type: transaction.type,
     description: transaction.description,
+    bankAccount: transaction.bankAccount,
     senderBankName: transaction.senderBankName,
     senderAccount: transaction.senderAccount,
     senderName: transaction.senderName,
@@ -496,6 +564,10 @@ function normalizePaymentPrefix(value) {
     .trim()
     .replace(/[^A-Za-z0-9]/g, "")
     .toUpperCase();
+}
+
+function normalizeAccountNumber(value) {
+  return String(value || "").replace(/\D/g, "");
 }
 
 function escapeRegExp(value) {
