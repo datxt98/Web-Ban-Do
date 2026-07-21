@@ -200,6 +200,7 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     const catalogPayload = await catalogResponse.json();
     assert.match(catalogPayload.reply, /Mua xu cua BOT gia/);
     assert.match(catalogPayload.reply, /200\.000 xu/);
+    assert.match(catalogPayload.reply, /Vi du: muaxu 1000000 la mua 1m xu/);
     assert.match(catalogPayload.reply, /Ban xu cho BOT gia/);
     assert.match(catalogPayload.reply, /260\.000 xu/);
     assert.ok(catalogPayload.replies.every((reply) => !reply.includes("\n") && reply.length <= 180));
@@ -887,6 +888,58 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
     assert.equal(duplicateResponse.status, 200);
     const duplicatePayload = await duplicateResponse.json();
     assert.equal(duplicatePayload.results[0].status, "already_paid");
+
+    const mbPrefixBankResponse = await fetch(`${baseUrl}/api/bando/bank-accounts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bankName: "MB Bank",
+        bankCode: "MB",
+        accountNumber: "0333650993",
+        accountName: "HOANG TIEN DUNG",
+        paymentPrefix: "MB",
+        callbackSignature: "unit-bank-signature",
+        active: true,
+      }),
+    });
+    assert.equal(mbPrefixBankResponse.status, 200);
+
+    const prefixOrderResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "KhachPrefix",
+        serverName: "Webhook Server",
+        privateMessage: "webhookitem 1",
+      }),
+    });
+    assert.equal(prefixOrderResponse.status, 201);
+    const prefixOrderPayload = await prefixOrderResponse.json();
+    assert.match(prefixOrderPayload.order.paymentCode, safeOrderCodePattern);
+
+    const prefixedWebhookResponse = await fetch(`${baseUrl}/api/bando/payments/bank-webhook`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        signature: "unit-bank-signature",
+      },
+      body: JSON.stringify({
+        transactionID: "MBB-PREFIX-UNIT-1",
+        creditAmount: String(prefixOrderPayload.order.totalAmount),
+        debitAmount: "0",
+        accountNo: "0333650993",
+        description: `HOANG DUC CHIEN ${prefixOrderPayload.order.paymentCode} I2MBXWJ8/185934 MBVCB.15218596641.954170.${prefixOrderPayload.order.paymentCode}.CT`,
+        transactionType: "credit",
+      }),
+    });
+    assert.equal(prefixedWebhookResponse.status, 200);
+    const prefixedWebhookPayload = await prefixedWebhookResponse.json();
+    assert.equal(prefixedWebhookPayload.matched, 1);
+    assert.equal(prefixedWebhookPayload.results[0].paymentCode, prefixOrderPayload.order.paymentCode);
+    assert.ok(prefixedWebhookPayload.results[0].paymentCodes.includes(prefixOrderPayload.order.paymentCode));
+    assert.equal(prefixedWebhookPayload.results[0].bankAccount.accountNumber, "0333650993");
+    assert.equal(prefixedWebhookPayload.results[0].order.bankName, "MB Bank");
+    assert.equal(prefixedWebhookPayload.results[0].order.accountNumber, "0333650993");
 
     const bankEvents = [];
     const unsubscribe = subscribeBandoEvents((event) => bankEvents.push(event));
