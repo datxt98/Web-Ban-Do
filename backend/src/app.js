@@ -18,6 +18,7 @@ import {
   deleteBandoGameServer,
   getBandoAuthStatus,
   getBandoBotConfig,
+  getBandoWebStatistics,
   importBandoItemsFromServer,
   listBandoGameServers,
   listPendingBandoDeliveries,
@@ -28,6 +29,7 @@ import {
   upsertBandoBankAccount,
   upsertBandoGameServer,
   updateBandoBotConfig,
+  updateBandoBuffedXu,
   updateBandoInventory,
   updateBandoPrice,
   validateBandoAdminAuth,
@@ -85,6 +87,30 @@ export function createApp(options = {}) {
 
   app.get("/api/bando/history", authorizeAdmin, asyncHandler(async (_req, res) => {
     res.json(await listBandoState({ gameName: _req.query.gameName, serverName: _req.query.serverName }));
+  }));
+
+  app.get("/api/bando/statistics", authorizeAdmin, asyncHandler(async (req, res) => {
+    const result = await getBandoWebStatistics({
+      fromDate: req.query.fromDate,
+      toDate: req.query.toDate,
+      user: req.bandoAdminUser,
+    });
+    if (!result.ok) return res.status(400).json(result);
+    return res.json(result);
+  }));
+
+  app.patch("/api/bando/statistics/buffed-xu", authorizeAdmin, asyncHandler(async (req, res) => {
+    const result = await updateBandoBuffedXu({
+      fromDate: req.body.fromDate,
+      toDate: req.body.toDate,
+      buffedXu: req.body.buffedXu,
+      user: req.bandoAdminUser,
+    });
+    if (!result.ok) {
+      const status = /datxt998/i.test(result.error || "") ? 403 : 400;
+      return res.status(status).json(result);
+    }
+    return res.json(result);
   }));
 
   app.get("/api/bando/bot/config", authorizeAdmin, asyncHandler(async (req, res) => {
