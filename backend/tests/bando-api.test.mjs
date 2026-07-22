@@ -1135,6 +1135,39 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
     assert.equal(prefixedWebhookPayload.results[0].order.bankName, "MB Bank");
     assert.equal(prefixedWebhookPayload.results[0].order.accountNumber, "0333650993");
 
+    const embeddedOrderResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "KhachEmbedded",
+        serverName: "Webhook Server",
+        privateMessage: "webhookitem 1",
+      }),
+    });
+    assert.equal(embeddedOrderResponse.status, 201);
+    const embeddedOrderPayload = await embeddedOrderResponse.json();
+
+    const embeddedWebhookResponse = await fetch(`${baseUrl}/api/bando/payments/bank-webhook`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        signature: "unit-bank-signature",
+      },
+      body: JSON.stringify({
+        transactionID: "MBB-EMBEDDED-UNIT-1",
+        creditAmount: String(embeddedOrderPayload.order.totalAmount),
+        debitAmount: "0",
+        accountNo: "0333650993",
+        description: `CUSTOMER${embeddedOrderPayload.order.paymentCode}. TU: DO MANH CUONG`,
+        transactionType: "credit",
+      }),
+    });
+    assert.equal(embeddedWebhookResponse.status, 200);
+    const embeddedWebhookPayload = await embeddedWebhookResponse.json();
+    assert.equal(embeddedWebhookPayload.matched, 1);
+    assert.equal(embeddedWebhookPayload.results[0].paymentCode, embeddedOrderPayload.order.paymentCode);
+    assert.ok(embeddedWebhookPayload.results[0].paymentCodes.includes(embeddedOrderPayload.order.paymentCode));
+
     const bankEvents = [];
     const unsubscribe = subscribeBandoEvents((event) => bankEvents.push(event));
     try {
