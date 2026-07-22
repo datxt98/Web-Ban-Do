@@ -1,7 +1,9 @@
 import { confirmBandoPayment } from "./bando-storage.js";
 import { emitBandoEvent } from "./bando-events.js";
 
-const PAYMENT_CODE_GLOBAL_PATTERN = /\bBD[A-Z0-9]{4,10}\b/gi;
+const PAYMENT_CODE_GLOBAL_PATTERN = /BD[A-Z0-9]{4,10}\b/gi;
+const PAYMENT_CODE_EXACT_PATTERN = /^BD[A-Z0-9]{4,10}$/;
+const PAYMENT_CODE_TOTAL_LENGTHS = [7, 8, 6, 9, 10, 11, 12];
 const UNMATCHED_BANK_CACHE_MS = 6 * 60 * 60 * 1000;
 const ARRAY_KEYS = [
   "TranList",
@@ -308,6 +310,22 @@ function addPaymentCodeMatches(candidates, text) {
 
   for (const match of source.matchAll(PAYMENT_CODE_GLOBAL_PATTERN)) {
     addPaymentCodeCandidate(candidates, match[0]);
+  }
+
+  addEmbeddedPaymentCodeMatches(candidates, source);
+}
+
+function addEmbeddedPaymentCodeMatches(candidates, text) {
+  const source = String(text || "").toUpperCase();
+  for (let index = 0; index < source.length - 5; index += 1) {
+    if (source[index] !== "B" || source[index + 1] !== "D") continue;
+
+    for (const length of PAYMENT_CODE_TOTAL_LENGTHS) {
+      const code = source.slice(index, index + length);
+      if (code.length !== length) continue;
+      if (!PAYMENT_CODE_EXACT_PATTERN.test(code)) continue;
+      addPaymentCodeCandidate(candidates, code);
+    }
   }
 }
 
