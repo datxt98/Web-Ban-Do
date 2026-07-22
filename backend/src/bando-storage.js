@@ -247,7 +247,15 @@ export async function updateBandoBuffedXu(args = {}) {
     return { ok: false, error: "Chỉ tài khoản datxt998 được sửa số xu đã buff." };
   }
 
-  const mysqlResult = await upsertBandoBuffedXuMysql({ ...range, buffedXu: args.buffedXu, user: args.user });
+  const mysqlResult = await upsertBandoBuffedXuMysql({
+    ...range,
+    id: args.id,
+    buffedDate: args.buffedDate,
+    amount: args.amount,
+    buffedXu: args.buffedXu,
+    note: args.note,
+    user: args.user,
+  });
   if (mysqlResult) return mysqlResult;
 
   const buffedDate = normalizeStatsDate(args.buffedDate) || range.toDate;
