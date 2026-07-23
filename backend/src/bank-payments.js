@@ -1,5 +1,6 @@
 import { confirmBandoPayment } from "./bando-storage.js";
 import { emitBandoEvent } from "./bando-events.js";
+import { recordBandoBankUnmatchedEventMysql } from "./bando-mysql.js";
 
 const PAYMENT_CODE_GLOBAL_PATTERN = /BD[A-Z0-9]{4,10}\b/gi;
 const PAYMENT_CODE_EXACT_PATTERN = /^BD[A-Z0-9]{4,10}$/;
@@ -453,7 +454,7 @@ function notifyUnmatchedIncomingTransaction(transaction, reason) {
   if (!key || hasRecentUnmatchedBankTransaction(key)) return;
   rememberUnmatchedBankTransaction(key);
 
-  emitBandoEvent("bank_unmatched_payment", {
+  const payload = {
     reason,
     bankTransaction: {
       transactionId: transaction.transactionId,
@@ -467,6 +468,13 @@ function notifyUnmatchedIncomingTransaction(transaction, reason) {
       senderName: transaction.senderName,
       receiverAccount: transaction.receiverAccount,
     },
+  };
+
+  emitBandoEvent("bank_unmatched_payment", {
+    ...payload,
+  });
+  recordBandoBankUnmatchedEventMysql(payload).catch((error) => {
+    console.warn("[bando:bank] luu event tien khong khop loi:", error instanceof Error ? error.message : error);
   });
 }
 

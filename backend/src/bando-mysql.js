@@ -213,7 +213,7 @@ export async function listBandoTelegramCreatedEventsMysql(args = {}) {
       `SELECT *
        FROM bando_events
        WHERE id > ?
-         AND type IN ('order_created', 'coin_buy_created', 'coin_sell_requested')
+         AND type IN ('order_created', 'coin_buy_created', 'coin_sell_requested', 'payment_matched', 'bank_unmatched_payment')
        ORDER BY id ASC
        LIMIT ?`,
       [afterId, limit],
@@ -234,6 +234,29 @@ export async function listBandoTelegramCreatedEventsMysql(args = {}) {
       events,
       storage: "mysql",
     };
+  });
+}
+
+export async function recordBandoBankUnmatchedEventMysql(args = {}) {
+  return withBandoConnection(async (conn) => {
+    const bankTransaction = args.bankTransaction || {};
+    const message = JSON.stringify({
+      reason: String(args.reason || "Khong tim thay ma don BD trong noi dung."),
+      bankTransaction: {
+        transactionId: String(bankTransaction.transactionId || ""),
+        paymentCode: String(bankTransaction.paymentCode || ""),
+        amount: toNumber(bankTransaction.amount, 0),
+        description: String(bankTransaction.description || ""),
+        type: String(bankTransaction.type || ""),
+        bankAccount: bankTransaction.bankAccount || null,
+        senderBankName: String(bankTransaction.senderBankName || ""),
+        senderAccount: String(bankTransaction.senderAccount || ""),
+        senderName: String(bankTransaction.senderName || ""),
+        receiverAccount: String(bankTransaction.receiverAccount || ""),
+      },
+    });
+    await insertEvent(conn, null, "bank_unmatched_payment", message);
+    return { ok: true, storage: "mysql" };
   });
 }
 
@@ -2092,6 +2115,59 @@ async function buildTelegramCreatedEvent(conn, event) {
     };
   }
 
+  if (event.type === "payment_matched") {
+    const order = await findOrderForTelegram(conn, orderCode);
+    if (!order) return null;
+    const coinTrade = order.itemCode === COIN_ITEM_CODE ? await findCoinTradeForTelegram(conn, orderCode) : null;
+    const transaction = await findMatchedTransactionForTelegram(conn, orderCode, order.paymentCode);
+    const bankAccount = order.bankAccount || coinTradeBankAccount(coinTrade) || await findBankAccountForPaymentCode(conn, order.paymentCode);
+    const bankTransaction = transaction
+      ? {
+          transactionId: bankTransactionIdFromNote(transaction.note),
+          paymentCode: transaction.paymentCode || order.paymentCode,
+          amount: transaction.amount,
+          description: bankDescriptionFromTransactionNote(transaction.note),
+          type: bankTransactionTypeFromNote(transaction.note),
+          bankAccount,
+        }
+      : {
+          transactionId: "",
+          paymentCode: order.paymentCode,
+          amount: order.totalAmount,
+          description: event.message,
+          type: "",
+          bankAccount,
+        };
+
+    return {
+      id: event.id,
+      type: "order_payment_confirmed",
+      payload: {
+        order: bankAccount ? { ...order, bankAccount } : order,
+        coinTrade,
+        bankAccount,
+        bankTransaction,
+        note: event.message,
+      },
+      createdAt: event.createdAt,
+    };
+  }
+
+  if (event.type === "bank_unmatched_payment") {
+    const payload = parseEventJsonMessage(event.message);
+    const bankTransaction = payload.bankTransaction;
+    if (!bankTransaction) return null;
+    return {
+      id: event.id,
+      type: "bank_unmatched_payment",
+      payload: {
+        reason: payload.reason || "Khong tim thay ma don BD trong noi dung.",
+        bankTransaction,
+      },
+      createdAt: event.createdAt,
+    };
+  }
+
   return null;
 }
 
@@ -2110,6 +2186,21 @@ async function findOrderForTelegram(conn, orderCode) {
 async function findCoinTradeForTelegram(conn, orderCode) {
   const [rows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [orderCode]);
   return rows[0] ? mapCoinTrade(rows[0]) : null;
+}
+
+async function findMatchedTransactionForTelegram(conn, orderCode, paymentCode) {
+  const code = String(orderCode || "").trim().toUpperCase();
+  const payment = String(paymentCode || "").trim().toUpperCase();
+  const [rows] = await conn.query(
+    `SELECT *
+     FROM bando_transactions
+     WHERE status = 'matched'
+       AND (order_code = ? OR payment_code = ?)
+     ORDER BY id DESC
+     LIMIT 1`,
+    [code, payment],
+  );
+  return rows[0] ? mapTransaction(rows[0]) : null;
 }
 
 async function attachPaymentBankAccount(conn, order) {
@@ -2157,6 +2248,36 @@ function mapEvent(row) {
     message: String(row.message ?? ""),
     createdAt: String(row.created_at ?? ""),
   };
+}
+
+function parseEventJsonMessage(message) {
+  try {
+    const payload = JSON.parse(String(message || "{}"));
+    return payload && typeof payload === "object" ? payload : {};
+  } catch {
+    return {};
+  }
+}
+
+function bankTransactionIdFromNote(note) {
+  const match = String(note || "").match(/(?:^|\s\|\s)id=([^|]+)/i);
+  return match ? match[1].trim() : "";
+}
+
+function bankTransactionTypeFromNote(note) {
+  const match = String(note || "").match(/(?:^|\s\|\s)type=([^|]+)/i);
+  return match ? match[1].trim() : "";
+}
+
+function bankDescriptionFromTransactionNote(note) {
+  const text = String(note || "").trim();
+  if (!text) return "";
+  const parts = text
+    .split(" | ")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => part.toLowerCase() !== "bank" && !/^id=/i.test(part) && !/^type=/i.test(part));
+  return parts.join(" | ") || text;
 }
 
 function mapBankAccount(row) {
