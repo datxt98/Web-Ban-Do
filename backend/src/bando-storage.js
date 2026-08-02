@@ -82,7 +82,7 @@ const memoryState = {
 
 const memoryInventoryByItemId = new Map();
 const DEFAULT_GAME_NAME = "Ninja Mobile";
-const SAFE_CODE_ALPHABET = "123456789ABCDEFGHJKMNPQRSTUVWXYZ";
+const PAYMENT_CODE_TTL_MS = 30 * 60 * 1000;
 const memoryEventLimit = 200;
 let memoryBotConfig = createDefaultBotConfig();
 let memoryBotConfigUpdatedAt = new Date().toISOString();
@@ -212,6 +212,7 @@ export async function validateBandoAdminAuth(headers = {}, options = {}) {
 }
 
 export async function listBandoState(args = {}) {
+  expireMemoryAwaitingPayments();
   const gameName = normalizeGameName(args.gameName);
   const serverName = normalizeServerName(args.serverName);
   const characterName = await resolveInventoryCharacterName(gameName, serverName);
@@ -396,6 +397,7 @@ export async function resolveBandoBotConfig(args) {
 }
 
 export async function createBandoOrderFromChat(args) {
+  expireMemoryAwaitingPayments();
   const characterName = String(args.characterName || "").trim();
   const privateMessage = String(args.privateMessage || "").trim();
   const gameName = normalizeGameName(args.gameName);
@@ -491,6 +493,7 @@ export async function createBandoOrderFromChat(args) {
   const paymentCode = orderCode;
   const totalAmount = parsed.quantity * item.sellPrice;
   const now = new Date().toISOString();
+  const paymentExpiresAt = paymentExpiryFromCreatedAt(now);
   const order = {
     orderCode,
     paymentCode,
@@ -509,6 +512,7 @@ export async function createBandoOrderFromChat(args) {
     accountNumber: bankAccount?.accountNumber ?? "",
     accountName: bankAccount?.accountName ?? "",
     createdAt: now,
+    paymentExpiresAt,
     paidAt: null,
     deliveredAt: null,
   };
@@ -568,6 +572,7 @@ async function createCoinBuyOrderFromChat(args) {
   const paymentCode = orderCode;
   const totalAmount = calculateCustomerPayVnd(args.coinAmount, sellConfig.rate);
   const now = new Date().toISOString();
+  const paymentExpiresAt = paymentExpiryFromCreatedAt(now);
   const order = {
     orderCode,
     paymentCode,
@@ -586,6 +591,7 @@ async function createCoinBuyOrderFromChat(args) {
     accountNumber: bankAccount?.accountNumber ?? "",
     accountName: bankAccount?.accountName ?? "",
     createdAt: now,
+    paymentExpiresAt,
     paidAt: null,
     deliveredAt: null,
   };
@@ -865,6 +871,7 @@ function findPendingPayoutInfoTrade(coinTrades = [], characterName = "", gameNam
 }
 
 export async function confirmBandoPayment(args) {
+  expireMemoryAwaitingPayments();
   const paymentCode = String(args.paymentCode || "").trim().toUpperCase();
   const amount = Number(args.amount);
   const note = String(args.note || "").trim();
@@ -906,6 +913,7 @@ export async function confirmBandoPayment(args) {
 }
 
 export async function approveBandoOrder(args) {
+  expireMemoryAwaitingPayments();
   const orderCode = String(args.orderCode || "").trim().toUpperCase();
   const note = String(args.note || "").trim();
 
@@ -942,6 +950,7 @@ export async function approveBandoOrder(args) {
 }
 
 export async function cancelBandoRecord(args) {
+  expireMemoryAwaitingPayments();
   const code = String(args.orderCode || args.paymentCode || args.code || "").trim().toUpperCase();
   const note = String(args.note || "").trim();
   if (!code) {
@@ -1037,6 +1046,7 @@ export async function approveCoinTradePayout(args) {
 }
 
 export async function listPendingBandoDeliveries(args = {}) {
+  expireMemoryAwaitingPayments();
   const gameName = normalizeGameName(args.gameName);
   const serverName = normalizeServerName(args.serverName);
   const mysqlResult = await listPendingDeliveriesMysql({ gameName, serverName });
@@ -1818,7 +1828,11 @@ function memoryInventoryKey(gameName, serverName, characterName, itemId) {
 }
 
 function confirmPaymentMemory(paymentCode, amount, note) {
-  const order = memoryState.orders.find((entry) => entry.paymentCode === paymentCode);
+  const order = memoryState.orders.find(
+    (entry) => entry.paymentCode === paymentCode && entry.status === "awaiting_payment" && !isPaymentOrderExpired(entry),
+  ) || memoryState.orders.find(
+    (entry) => entry.paymentCode === paymentCode && (entry.status === "paid" || entry.status === "completed"),
+  );
   if (!order) {
     memoryState.transactions.unshift({
       id: memoryTransactionId++,
@@ -1878,7 +1892,9 @@ function confirmPaymentMemory(paymentCode, amount, note) {
 }
 
 function approveOrderMemory(orderCode, note) {
-  const order = memoryState.orders.find((entry) => entry.orderCode === orderCode);
+  const order = memoryState.orders.find(
+    (entry) => entry.orderCode === orderCode && entry.status === "awaiting_payment" && !isPaymentOrderExpired(entry),
+  );
   if (!order) {
     return { ok: false, error: "Không tìm thấy đơn." };
   }
@@ -1911,7 +1927,7 @@ function approveOrderMemory(orderCode, note) {
 }
 
 function confirmDeliveryMemory(orderCode, botName, extra = {}) {
-  const order = memoryState.orders.find((entry) => entry.orderCode === orderCode);
+  const order = memoryState.orders.find((entry) => entry.orderCode === orderCode && entry.status === "paid");
   if (!order) return confirmCoinReceiveMemory(orderCode, botName, extra);
   if (!order) {
     return { ok: false, error: "Không tìm thấy đơn." };
@@ -1939,7 +1955,9 @@ function confirmDeliveryMemory(orderCode, botName, extra = {}) {
 }
 
 function confirmCoinReceiveMemory(orderCode, botName, extra = {}) {
-  const trade = memoryState.coinTrades.find((entry) => entry.orderCode === orderCode);
+  const trade = memoryState.coinTrades.find(
+    (entry) => entry.orderCode === orderCode && entry.type === "sell_xu" && entry.status === "awaiting_trade",
+  );
   if (!trade) {
     return { ok: false, error: "Không tìm thấy đơn." };
   }
@@ -2050,15 +2068,12 @@ function normalizeBotCoinAmount(value) {
 }
 
 function createCoinTradeCode(existingTrades = [], prefix = "SX") {
-  const used = new Set(existingTrades.map((trade) => String(trade.orderCode || "").toUpperCase()));
-  for (let i = 0; i < 30; i++) {
-    const timePart = safeCodeFromNumber(Date.now(), 3);
-    const randomPart = randomSafeCodePart(2);
-    const code = `${prefix}${timePart}${randomPart}`;
-    if (!used.has(code)) return code;
-  }
-
-  return `${prefix}${randomSafeCodePart(6)}`;
+  const used = new Set(
+    existingTrades
+      .filter((trade) => isActiveCoinTradeCode(trade))
+      .map((trade) => String(trade.orderCode || "").toUpperCase()),
+  );
+  return createShortNumericCode(prefix, used);
 }
 
 function normalizeAliases(value, buyName, code) {
@@ -2121,37 +2136,62 @@ function selectPaymentBankAccount(bankAccounts) {
 
 function createOrderCode(existingOrders = []) {
   const used = new Set(
-    existingOrders.flatMap((order) => [
-      String(order.orderCode || "").toUpperCase(),
-      String(order.paymentCode || "").toUpperCase(),
-    ]),
+    existingOrders
+      .filter((order) => isActivePaymentOrder(order))
+      .flatMap((order) => [
+        String(order.orderCode || "").toUpperCase(),
+        String(order.paymentCode || "").toUpperCase(),
+      ]),
   );
-  for (let i = 0; i < 30; i++) {
-    const timePart = safeCodeFromNumber(Date.now(), 3);
-    const randomPart = randomSafeCodePart(2);
-    const code = `BD${timePart}${randomPart}`;
+  return createShortNumericCode("BD", used);
+}
+
+function createShortNumericCode(prefix, used = new Set()) {
+  const normalizedPrefix = String(prefix || "BD").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 2).padEnd(2, "X");
+  const start = Math.floor(Math.random() * 1000);
+  for (let i = 0; i < 1000; i++) {
+    const number = (start + i) % 1000;
+    const code = `${normalizedPrefix}${String(number).padStart(3, "0")}`;
     if (!used.has(code)) return code;
   }
-
-  return `BD${randomSafeCodePart(6)}`;
+  return `${normalizedPrefix}${String(start).padStart(3, "0")}`;
 }
 
-function safeCodeFromNumber(value, length) {
-  let number = Math.max(0, Math.trunc(Number(value) || 0));
-  let code = "";
-  for (let i = 0; i < length; i++) {
-    code = SAFE_CODE_ALPHABET[number % SAFE_CODE_ALPHABET.length] + code;
-    number = Math.floor(number / SAFE_CODE_ALPHABET.length);
-  }
-  return code;
+function isActivePaymentOrder(order) {
+  return order && String(order.status || "") === "awaiting_payment" && !isPaymentOrderExpired(order);
 }
 
-function randomSafeCodePart(length) {
-  let code = "";
-  for (let i = 0; i < length; i++) {
-    code += SAFE_CODE_ALPHABET[Math.floor(Math.random() * SAFE_CODE_ALPHABET.length)];
+function isActiveCoinTradeCode(trade) {
+  if (!trade) return false;
+  const status = String(trade.status || "");
+  if (status === "cancelled" || status === "expired" || status === "payout_completed") return false;
+  if (trade.type === "buy_xu") return status === "awaiting_payment" && !isPaymentOrderExpired(trade);
+  return status === "awaiting_trade" || status === "awaiting_payout_info" || status === "completed";
+}
+
+function isPaymentOrderExpired(order, nowMs = Date.now()) {
+  const expiresAtMs = Date.parse(order?.paymentExpiresAt || "");
+  if (Number.isFinite(expiresAtMs)) return expiresAtMs <= nowMs;
+  const createdAtMs = Date.parse(order?.createdAt || "");
+  return Number.isFinite(createdAtMs) && createdAtMs + PAYMENT_CODE_TTL_MS <= nowMs;
+}
+
+function paymentExpiryFromCreatedAt(createdAt) {
+  const createdAtMs = Date.parse(createdAt);
+  const baseMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+  return new Date(baseMs + PAYMENT_CODE_TTL_MS).toISOString();
+}
+
+function expireMemoryAwaitingPayments(now = new Date()) {
+  const nowMs = now.getTime();
+  for (const order of memoryState.orders) {
+    if (order.status === "awaiting_payment" && isPaymentOrderExpired(order, nowMs)) {
+      order.status = "expired";
+      pushMemoryEvent(order.orderCode, "order_expired", `Don ${order.orderCode} qua 30 phut chua thanh toan.`);
+      const coinTrade = memoryState.coinTrades.find((trade) => trade.orderCode === order.orderCode && trade.type === "buy_xu");
+      if (coinTrade && coinTrade.status === "awaiting_payment") coinTrade.status = "expired";
+    }
   }
-  return code;
 }
 
 function normalizePaymentPrefix(value) {
