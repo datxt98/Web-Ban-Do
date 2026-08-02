@@ -300,7 +300,7 @@ function buildCoinCatalogReplies(coinTradeConfig, botCoinAmount) {
   }
 
   if (importXu.enabled !== false) {
-    replies.push(`Ban xu cho BOT gia: 1.000 VND = ${formatXu(coinsPer1000Vnd(importXu.rate))}. Lenh: banxu <so xu>.`);
+    replies.push(`Ban xu cho BOT gia: 1.000 VND = ${formatXu(coinsPer1000Vnd(importXu.rate))}. Moi giao dich BOT va dat so xu muon ban.`);
   } else {
     replies.push("Ban Xu: dang tat tren web.");
   }

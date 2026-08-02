@@ -270,6 +270,7 @@ function buildTelegramEventBody(event) {
       `Phiếu: <b>${h(trade.orderCode)}</b>`,
       `Khách: ${h(trade.characterName)} (${h(trade.serverName)})`,
       `Đã nhận: ${formatXu(trade.receivedCoinAmount || trade.coinAmount)}`,
+      `Số tiền cần trả: <b>${formatVnd(trade.totalAmount)}</b>`,
       "Đang chờ khách gửi thông tin ngân hàng.",
     ].join("\n");
   }

@@ -14,6 +14,7 @@ import {
   confirmBandoDelivery,
   confirmBandoPayment,
   createBandoOrderFromChat,
+  createCoinSellTradeFromBotReceive,
   deleteBandoBankAccount,
   deleteBandoGameServer,
   getBandoAuthStatus,
@@ -307,6 +308,19 @@ export function createApp(options = {}) {
 
     if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
     return res.json(result);
+  }));
+
+  app.post("/api/bando/bot/coin-trades/receive", authorizeBot, asyncHandler(async (req, res) => {
+    const result = await createCoinSellTradeFromBotReceive({
+      characterName: req.body.characterName,
+      botName: req.body.botName,
+      gameName: req.body.gameName,
+      serverName: req.body.serverName,
+      receivedCoinAmount: req.body.receivedCoinAmount,
+    });
+
+    if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+    return res.status(201).json(result);
   }));
 
   app.post("/api/bando/bot/notifications/confirm", authorizeBot, asyncHandler(async (req, res) => {
