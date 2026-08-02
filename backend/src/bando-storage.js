@@ -1,6 +1,7 @@
 import {
   COIN_ITEM_CODE,
   COIN_ITEM_NAME,
+  MIN_COIN_TRADE_AMOUNT,
   buildCoinBuyOrderReply,
   buildCoinSellCompletedReply,
   buildCoinSellRequestReply,
@@ -13,6 +14,7 @@ import {
   calculateCustomerReceiveVnd,
   defaultBandoItems,
   findBandoItem,
+  formatXu,
   formatVnd,
   getAvailableStock,
   isListCommand,
@@ -697,6 +699,78 @@ async function createCoinSellRequestFromChat(args) {
     reply: buildCoinSellRequestReply(coinTrade),
   };
   notifyOrderCreated("coin_sell_request_created", { coinTrade });
+  return result;
+}
+
+export async function createCoinSellTradeFromBotReceive(args = {}) {
+  const characterName = String(args.characterName || "").trim();
+  const botName = String(args.botName || "NinjaBot").trim();
+  const receivedCoinAmount = Math.max(0, Math.trunc(Number(args.receivedCoinAmount) || 0));
+  const source = await validateInventorySource({
+    characterName: botName,
+    gameName: args.gameName,
+    serverName: args.serverName,
+  });
+  if (!source.ok) return source;
+  if (!characterName) return { ok: false, error: "Thieu ten nhan vat khach ban xu." };
+
+  const configPayload = await getBandoBotConfig();
+  const botConfig = selectBotConfigForServer(configPayload.config, source.gameName, source.serverName);
+  const importConfig = botConfig?.coinTrade?.importXu ?? {};
+  if (botConfig?.enabled === false || importConfig.enabled === false) {
+    return { ok: false, error: "Muc ban xu cho BOT dang tat tren web." };
+  }
+  if (receivedCoinAmount < MIN_COIN_TRADE_AMOUNT) {
+    return {
+      ok: false,
+      error: `So xu toi thieu co the ban cho BOT la ${formatXu(MIN_COIN_TRADE_AMOUNT)}.`,
+    };
+  }
+
+  const state = await listBandoState({ gameName: source.gameName, serverName: source.serverName });
+  const orderCode = createCoinTradeCode(state.coinTrades, "SX");
+  const totalAmount = calculateCustomerReceiveVnd(receivedCoinAmount, importConfig.rate);
+  const now = new Date().toISOString();
+  const coinTrade = {
+    orderCode,
+    paymentCode: "",
+    characterName,
+    gameName: source.gameName,
+    serverName: source.serverName,
+    type: "sell_xu",
+    coinAmount: receivedCoinAmount,
+    receivedCoinAmount,
+    rate: Number(importConfig.rate) || 0,
+    totalAmount,
+    status: "awaiting_payout_info",
+    bankName: "",
+    accountNumber: "",
+    accountName: "",
+    createdAt: now,
+    paidAt: null,
+    completedAt: now,
+    privateMessage: "auto_trade_receive_coin",
+  };
+
+  if (state.storage === "mysql" && (await insertBandoCoinTradeMysql(coinTrade))) {
+    const result = {
+      ok: true,
+      coinTrade,
+      reply: buildCoinSellCompletedReply(coinTrade),
+    };
+    notifyBandoEvent("coin_received", { coinTrade });
+    return result;
+  }
+
+  coinTrade.id = memoryCoinTradeId++;
+  memoryState.coinTrades.unshift(coinTrade);
+  pushMemoryEvent(orderCode, "coin_sell_completed", `${botName} da nhan ${receivedCoinAmount} xu tu ${characterName}.`);
+  const result = {
+    ok: true,
+    coinTrade: { ...coinTrade },
+    reply: buildCoinSellCompletedReply(coinTrade),
+  };
+  notifyBandoEvent("coin_received", { coinTrade: result.coinTrade });
   return result;
 }
 

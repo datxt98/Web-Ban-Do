@@ -213,7 +213,7 @@ export async function listBandoTelegramCreatedEventsMysql(args = {}) {
       `SELECT *
        FROM bando_events
        WHERE id > ?
-         AND type IN ('order_created', 'coin_buy_created', 'coin_sell_requested', 'payment_matched', 'bank_unmatched_payment')
+         AND type IN ('order_created', 'coin_buy_created', 'coin_sell_requested', 'coin_sell_completed', 'payment_matched', 'bank_unmatched_payment')
        ORDER BY id ASC
        LIMIT ?`,
       [afterId, limit],
@@ -321,7 +321,15 @@ export async function insertBandoCoinTradeMysql(trade) {
         trade.completedAt || null,
       ],
     );
-    await insertEvent(conn, trade.orderCode, trade.type === "buy_xu" ? "coin_buy_created" : "coin_sell_requested", `${trade.characterName} tao phieu ${trade.type} ${trade.coinAmount} xu.`);
+    const eventType = trade.type === "buy_xu"
+      ? "coin_buy_created"
+      : trade.status === "awaiting_payout_info"
+        ? "coin_sell_completed"
+        : "coin_sell_requested";
+    const eventMessage = eventType === "coin_sell_completed"
+      ? `${trade.characterName} da giao ${trade.receivedCoinAmount || trade.coinAmount} xu cho BOT.`
+      : `${trade.characterName} tao phieu ${trade.type} ${trade.coinAmount} xu.`;
+    await insertEvent(conn, trade.orderCode, eventType, eventMessage);
     return true;
   });
 }
@@ -2110,6 +2118,17 @@ async function buildTelegramCreatedEvent(conn, event) {
     return {
       id: event.id,
       type: "coin_sell_request_created",
+      payload: { coinTrade },
+      createdAt: event.createdAt,
+    };
+  }
+
+  if (event.type === "coin_sell_completed") {
+    const coinTrade = await findCoinTradeForTelegram(conn, orderCode);
+    if (!coinTrade) return null;
+    return {
+      id: event.id,
+      type: "coin_received",
       payload: { coinTrade },
       createdAt: event.createdAt,
     };

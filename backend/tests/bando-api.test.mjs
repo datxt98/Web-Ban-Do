@@ -307,6 +307,54 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     assert.equal(sellDeliveryPayload.coinTrade.status, "awaiting_payout_info");
     assert.match(sellDeliveryPayload.reply, /NganHang STK TenTaiKhoan/);
 
+    const autoSmallReceiveResponse = await fetch(`${baseUrl}/api/bando/bot/coin-trades/receive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "KhachAutoBanXu",
+        botName: "NinjaBot",
+        serverName: "Ninja School",
+        receivedCoinAmount: 500000,
+      }),
+    });
+    assert.equal(autoSmallReceiveResponse.status, 400);
+    const autoSmallReceivePayload = await autoSmallReceiveResponse.json();
+    assert.match(autoSmallReceivePayload.error, /toi thieu/);
+
+    const autoReceiveResponse = await fetch(`${baseUrl}/api/bando/bot/coin-trades/receive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "KhachAutoBanXu",
+        botName: "NinjaBot",
+        serverName: "Ninja School",
+        receivedCoinAmount: 2600000,
+      }),
+    });
+    assert.equal(autoReceiveResponse.status, 201);
+    const autoReceivePayload = await autoReceiveResponse.json();
+    assert.equal(autoReceivePayload.coinTrade.type, "sell_xu");
+    assert.equal(autoReceivePayload.coinTrade.status, "awaiting_payout_info");
+    assert.equal(autoReceivePayload.coinTrade.coinAmount, 2600000);
+    assert.equal(autoReceivePayload.coinTrade.receivedCoinAmount, 2600000);
+    assert.equal(autoReceivePayload.coinTrade.totalAmount, 10000);
+    assert.match(autoReceivePayload.coinTrade.orderCode, safeCoinTradeCodePattern);
+    assert.match(autoReceivePayload.reply, /So tien ban nhan: 10\.000 VND/);
+
+    const autoPayoutResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "KhachAutoBanXu",
+        serverName: "Ninja School",
+        privateMessage: "MB 0999999999 KHACH AUTO",
+      }),
+    });
+    assert.equal(autoPayoutResponse.status, 200);
+    const autoPayoutPayload = await autoPayoutResponse.json();
+    assert.equal(autoPayoutPayload.coinTrade.orderCode, autoReceivePayload.coinTrade.orderCode);
+    assert.equal(autoPayoutPayload.coinTrade.status, "completed");
+
     const invalidPayoutResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
       method: "POST",
       headers: { "content-type": "application/json" },
