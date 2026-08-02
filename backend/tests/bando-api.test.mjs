@@ -8,8 +8,8 @@ process.env.NODE_ENV = "test";
 const { createApp } = await import("../src/app.js");
 const { subscribeBandoEvents } = await import("../src/bando-events.js");
 
-const safeOrderCodePattern = /^BD[1-9A-HJ-KM-NP-Z]{4,10}$/;
-const safeCoinTradeCodePattern = /^SX[1-9A-HJ-KM-NP-Z]{4,10}$/;
+const safeOrderCodePattern = /^BD\d{3}$/;
+const safeCoinTradeCodePattern = /^SX\d{3}$/;
 
 function listen(app) {
   return new Promise((resolve) => {
@@ -1215,6 +1215,38 @@ test("Bando API khop thanh toan tu webhook ngan hang", async () => {
     assert.equal(embeddedWebhookPayload.matched, 1);
     assert.equal(embeddedWebhookPayload.results[0].paymentCode, embeddedOrderPayload.order.paymentCode);
     assert.ok(embeddedWebhookPayload.results[0].paymentCodes.includes(embeddedOrderPayload.order.paymentCode));
+
+    const embeddedTailOrderResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "KhachEmbeddedTail",
+        serverName: "Webhook Server",
+        privateMessage: "webhookitem 1",
+      }),
+    });
+    assert.equal(embeddedTailOrderResponse.status, 201);
+    const embeddedTailOrderPayload = await embeddedTailOrderResponse.json();
+
+    const embeddedTailWebhookResponse = await fetch(`${baseUrl}/api/bando/payments/bank-webhook`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        signature: "unit-bank-signature",
+      },
+      body: JSON.stringify({
+        transactionID: "MBB-EMBEDDED-TAIL-UNIT-1",
+        creditAmount: String(embeddedTailOrderPayload.order.totalAmount),
+        debitAmount: "0",
+        accountNo: "0333650993",
+        description: `CUSTOMER${embeddedTailOrderPayload.order.paymentCode}TU`,
+        transactionType: "credit",
+      }),
+    });
+    assert.equal(embeddedTailWebhookResponse.status, 200);
+    const embeddedTailWebhookPayload = await embeddedTailWebhookResponse.json();
+    assert.equal(embeddedTailWebhookPayload.matched, 1);
+    assert.equal(embeddedTailWebhookPayload.results[0].paymentCode, embeddedTailOrderPayload.order.paymentCode);
 
     const bankEvents = [];
     const unsubscribe = subscribeBandoEvents((event) => bankEvents.push(event));

@@ -8,12 +8,14 @@ const NOISY_EVENT_TYPES = new Set(["inventory_synced"]);
 const DEFAULT_GAME_NAME = "Ninja Mobile";
 const NINJA_2D_GAME_NAME = "Ninja 2D";
 const DEFAULT_SERVER_ITEM_SYNC_MS = 5 * 60 * 1000;
+const PAYMENT_CODE_TTL_MS = 30 * 60 * 1000;
 let mysqlDisabledUntil = 0;
 let lastEventPruneAt = 0;
 const itemSyncCache = new Map();
 
 export async function listBandoStateMysql(args = {}) {
   return withBandoConnection(async (conn) => {
+    await expireStaleAwaitingPayments(conn);
     const gameName = normalizeGameName(args.gameName);
     const serverName = String(args.serverName || "").trim();
     const characterName = String(args.characterName || "").trim();
@@ -25,13 +27,13 @@ export async function listBandoStateMysql(args = {}) {
     const [orderRows] = await conn.query(
       `SELECT * FROM bando_orders
        WHERE game_name = ? AND (? = '' OR server_name = ?)
-       ORDER BY id DESC LIMIT 60`,
+       ORDER BY id DESC LIMIT 1000`,
       [gameName, serverName, serverName],
     );
     const [coinTradeRows] = await conn.query(
       `SELECT * FROM bando_coin_trades
        WHERE game_name = ? AND (? = '' OR server_name = ?)
-       ORDER BY id DESC LIMIT 100`,
+       ORDER BY id DESC LIMIT 1000`,
       [gameName, serverName, serverName],
     );
     const [transactionRows] = await conn.query("SELECT * FROM bando_transactions ORDER BY id DESC LIMIT 60");
@@ -262,12 +264,13 @@ export async function recordBandoBankUnmatchedEventMysql(args = {}) {
 
 export async function insertBandoOrderMysql(order) {
   return withBandoConnection(async (conn) => {
+    await expireStaleAwaitingPayments(conn);
     await conn.execute(
       `INSERT INTO bando_orders (
         order_code, payment_code, character_name, game_name, server_name, item_code, item_name,
         quantity, unit_price, total_amount, status, private_message, bank_name, bank_code,
-        account_number, account_name, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        account_number, account_name, created_at, payment_expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         order.orderCode,
         order.paymentCode,
@@ -286,6 +289,7 @@ export async function insertBandoOrderMysql(order) {
         order.accountNumber || "",
         order.accountName || "",
         order.createdAt,
+        order.paymentExpiresAt || paymentExpiryFromCreatedAt(order.createdAt),
       ],
     );
     await insertEvent(conn, order.orderCode, "order_created", `${order.characterName} tạo đơn ${order.orderCode} từ chat riêng.`);
@@ -336,14 +340,32 @@ export async function insertBandoCoinTradeMysql(trade) {
 
 export async function confirmPaymentMysql(paymentCode, amount, note) {
   return withBandoConnection(async (conn) => {
-    const [rows] = await conn.query(
+    await expireStaleAwaitingPayments(conn);
+    const cutoff = paymentExpiryCutoffIso();
+    let [rows] = await conn.query(
       `SELECT o.*, i.item_id
        FROM bando_orders o
        LEFT JOIN bando_items i ON i.code = o.item_code
        WHERE o.payment_code = ?
+         AND o.status = 'awaiting_payment'
+         AND o.created_at >= ?
+       ORDER BY o.id DESC
        LIMIT 1`,
-      [paymentCode],
+      [paymentCode, cutoff],
     );
+
+    if (rows.length === 0) {
+      [rows] = await conn.query(
+        `SELECT o.*, i.item_id
+         FROM bando_orders o
+         LEFT JOIN bando_items i ON i.code = o.item_code
+         WHERE o.payment_code = ?
+           AND o.status IN ('paid', 'completed')
+         ORDER BY COALESCE(NULLIF(o.paid_at, ''), o.created_at) DESC, o.id DESC
+         LIMIT 1`,
+        [paymentCode],
+      );
+    }
 
     if (rows.length === 0) {
       await insertTransaction(conn, null, paymentCode, amount, "rejected", note || "Không tìm thấy mã giao dịch");
@@ -374,12 +396,12 @@ export async function confirmPaymentMysql(paymentCode, amount, note) {
     }
 
     const paidAt = new Date().toISOString();
-    await conn.execute("UPDATE bando_orders SET status = ?, paid_at = ? WHERE order_code = ?", [
+    await conn.execute("UPDATE bando_orders SET status = ?, paid_at = ? WHERE id = ?", [
       "paid",
       paidAt,
-      order.orderCode,
+      order.id,
     ]);
-    await conn.execute("UPDATE bando_coin_trades SET status = ?, paid_at = ? WHERE order_code = ?", [
+    await conn.execute("UPDATE bando_coin_trades SET status = ?, paid_at = ? WHERE order_code = ? AND status = 'awaiting_payment'", [
       "paid",
       paidAt,
       order.orderCode,
@@ -393,13 +415,18 @@ export async function confirmPaymentMysql(paymentCode, amount, note) {
 
 export async function approveBandoOrderMysql(orderCode, note) {
   return withBandoConnection(async (conn) => {
+    await expireStaleAwaitingPayments(conn);
+    const cutoff = paymentExpiryCutoffIso();
     const [rows] = await conn.query(
       `SELECT o.*, i.item_id
        FROM bando_orders o
        LEFT JOIN bando_items i ON i.code = o.item_code
        WHERE o.order_code = ?
+         AND o.status = 'awaiting_payment'
+         AND o.created_at >= ?
+       ORDER BY o.id DESC
        LIMIT 1`,
-      [orderCode],
+      [orderCode, cutoff],
     );
     if (rows.length === 0) {
       return { ok: false, error: "Không tìm thấy đơn." };
@@ -414,12 +441,12 @@ export async function approveBandoOrderMysql(orderCode, note) {
     }
 
     const paidAt = new Date().toISOString();
-    await conn.execute("UPDATE bando_orders SET status = ?, paid_at = ? WHERE order_code = ?", [
+    await conn.execute("UPDATE bando_orders SET status = ?, paid_at = ? WHERE id = ?", [
       "paid",
       paidAt,
-      orderCode,
+      order.id,
     ]);
-    await conn.execute("UPDATE bando_coin_trades SET status = ?, paid_at = ? WHERE order_code = ?", [
+    await conn.execute("UPDATE bando_coin_trades SET status = ?, paid_at = ? WHERE order_code = ? AND status = 'awaiting_payment'", [
       "paid",
       paidAt,
       orderCode,
@@ -440,6 +467,7 @@ export async function cancelBandoRecordMysql(code, note) {
       `SELECT *
        FROM bando_orders
        WHERE order_code = ? OR payment_code = ?
+       ORDER BY id DESC
        LIMIT 1`,
       [lookupCode, lookupCode],
     );
@@ -453,11 +481,11 @@ export async function cancelBandoRecordMysql(code, note) {
       }
 
       const cancelledAt = new Date().toISOString();
-      await conn.execute("UPDATE bando_orders SET status = ? WHERE order_code = ?", [
+      await conn.execute("UPDATE bando_orders SET status = ? WHERE id = ?", [
         "cancelled",
-        order.orderCode,
+        order.id,
       ]);
-      await conn.execute("UPDATE bando_coin_trades SET status = ? WHERE order_code = ?", [
+      await conn.execute("UPDATE bando_coin_trades SET status = ? WHERE order_code = ? AND status IN ('awaiting_payment', 'paid')", [
         "cancelled",
         order.orderCode,
       ]);
@@ -466,7 +494,7 @@ export async function cancelBandoRecordMysql(code, note) {
       return { ok: true, order: { ...order, status: "cancelled", cancelledAt } };
     }
 
-    const [tradeRows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [lookupCode]);
+    const [tradeRows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? ORDER BY id DESC LIMIT 1", [lookupCode]);
     if (tradeRows.length === 0) {
       return { ok: false, error: "Khong tim thay don hoac phieu xu." };
     }
@@ -479,7 +507,7 @@ export async function cancelBandoRecordMysql(code, note) {
       return { ok: true, coinTrade: trade };
     }
 
-    await conn.execute("UPDATE bando_coin_trades SET status = ? WHERE order_code = ?", ["cancelled", trade.orderCode]);
+    await conn.execute("UPDATE bando_coin_trades SET status = ? WHERE id = ?", ["cancelled", trade.id]);
     await insertEvent(conn, trade.orderCode, "coin_trade_cancelled", note || `Admin huy phieu xu ${trade.orderCode}.`);
     return { ok: true, coinTrade: { ...trade, status: "cancelled" } };
   });
@@ -487,6 +515,7 @@ export async function cancelBandoRecordMysql(code, note) {
 
 export async function listPendingDeliveriesMysql(args = {}) {
   return withBandoConnection(async (conn) => {
+    await expireStaleAwaitingPayments(conn);
     const gameName = normalizeGameName(args.gameName);
     const serverName = String(args.serverName || "").trim();
     const [rows] = await conn.query(
@@ -548,7 +577,7 @@ export async function confirmBotNotificationMysql(orderCode, type) {
     }
     const notifiedAt = new Date().toISOString();
     const [result] = await conn.execute(
-      "UPDATE bando_coin_trades SET payout_notified_at = ? WHERE order_code = ? AND status = 'payout_completed'",
+      "UPDATE bando_coin_trades SET payout_notified_at = ? WHERE order_code = ? AND status = 'payout_completed' ORDER BY id DESC LIMIT 1",
       [notifiedAt, orderCode],
     );
     if (result.affectedRows === 0) {
@@ -561,7 +590,10 @@ export async function confirmBotNotificationMysql(orderCode, type) {
 
 export async function confirmDeliveryMysql(orderCode, botName, extra = {}) {
   return withBandoConnection(async (conn) => {
-    const [rows] = await conn.query("SELECT * FROM bando_orders WHERE order_code = ? LIMIT 1", [orderCode]);
+    const [rows] = await conn.query(
+      "SELECT * FROM bando_orders WHERE order_code = ? AND status = 'paid' ORDER BY paid_at DESC, id DESC LIMIT 1",
+      [orderCode],
+    );
     if (rows.length === 0) return confirmCoinReceiveMysql(conn, orderCode, botName, extra);
 
     if (rows.length === 0) {
@@ -574,17 +606,17 @@ export async function confirmDeliveryMysql(orderCode, botName, extra = {}) {
     }
 
     const deliveredAt = new Date().toISOString();
-    await conn.execute("UPDATE bando_orders SET status = ?, delivered_at = ? WHERE order_code = ?", [
+    await conn.execute("UPDATE bando_orders SET status = ?, delivered_at = ? WHERE id = ?", [
       "completed",
       deliveredAt,
-      orderCode,
+      order.id,
     ]);
     await conn.execute("UPDATE bando_items SET stock = GREATEST(stock - ?, 0), updated_at = ? WHERE code = ?", [
       order.quantity,
       deliveredAt,
       order.itemCode,
     ]);
-    await conn.execute("UPDATE bando_coin_trades SET status = ?, completed_at = ? WHERE order_code = ?", [
+    await conn.execute("UPDATE bando_coin_trades SET status = ?, completed_at = ? WHERE order_code = ? AND status = 'paid'", [
       "completed",
       deliveredAt,
       orderCode,
@@ -596,7 +628,10 @@ export async function confirmDeliveryMysql(orderCode, botName, extra = {}) {
 }
 
 async function confirmCoinReceiveMysql(conn, orderCode, botName, extra = {}) {
-  const [rows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [orderCode]);
+  const [rows] = await conn.query(
+    "SELECT * FROM bando_coin_trades WHERE order_code = ? AND type = 'sell_xu' AND status = 'awaiting_trade' ORDER BY id DESC LIMIT 1",
+    [orderCode],
+  );
   if (rows.length === 0) {
     return { ok: false, error: "Khong tim thay don." };
   }
@@ -613,8 +648,8 @@ async function confirmCoinReceiveMysql(conn, orderCode, botName, extra = {}) {
 
   const completedAt = new Date().toISOString();
   await conn.execute(
-    "UPDATE bando_coin_trades SET status = ?, received_coin_amount = ?, completed_at = ? WHERE order_code = ?",
-    ["awaiting_payout_info", receivedCoinAmount, completedAt, orderCode],
+    "UPDATE bando_coin_trades SET status = ?, received_coin_amount = ?, completed_at = ? WHERE id = ?",
+    ["awaiting_payout_info", receivedCoinAmount, completedAt, trade.id],
   );
   await insertEvent(conn, orderCode, "coin_sell_completed", `${botName} da nhan ${receivedCoinAmount} xu tu ${trade.characterName}.`);
 
@@ -652,12 +687,12 @@ export async function updateCoinTradePayoutInfoMysql(args) {
 
     const orderCode = String(rows[0].order_code ?? "");
     await conn.execute(
-      "UPDATE bando_coin_trades SET bank_name = ?, account_number = ?, account_name = ?, status = ? WHERE order_code = ?",
-      [bankName, accountNumber, accountName, "completed", orderCode],
+      "UPDATE bando_coin_trades SET bank_name = ?, account_number = ?, account_name = ?, status = ? WHERE id = ?",
+      [bankName, accountNumber, accountName, "completed", rows[0].id],
     );
     await insertEvent(conn, orderCode, "coin_payout_info_saved", `${characterName} da gui thong tin nhan tien.`);
 
-    const [nextRows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [orderCode]);
+    const [nextRows] = await conn.query("SELECT * FROM bando_coin_trades WHERE id = ? LIMIT 1", [rows[0].id]);
     return { ok: true, coinTrade: nextRows[0] ? mapCoinTrade(nextRows[0]) : null };
   });
 }
@@ -688,20 +723,23 @@ export async function cancelCoinTradePayoutInfoMysql(args) {
     }
 
     const orderCode = String(rows[0].order_code ?? "");
-    await conn.execute("UPDATE bando_coin_trades SET status = ? WHERE order_code = ?", [
+    await conn.execute("UPDATE bando_coin_trades SET status = ? WHERE id = ?", [
       "payout_info_cancelled",
-      orderCode,
+      rows[0].id,
     ]);
     await insertEvent(conn, orderCode, "coin_payout_info_cancelled", `${name} da huy nhap thong tin nhan tien.`);
 
-    const [nextRows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [orderCode]);
+    const [nextRows] = await conn.query("SELECT * FROM bando_coin_trades WHERE id = ? LIMIT 1", [rows[0].id]);
     return { ok: true, coinTrade: nextRows[0] ? mapCoinTrade(nextRows[0]) : null };
   });
 }
 
 export async function approveCoinTradePayoutMysql(orderCode, note) {
   return withBandoConnection(async (conn) => {
-    const [rows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [orderCode]);
+    const [rows] = await conn.query(
+      "SELECT * FROM bando_coin_trades WHERE order_code = ? AND type = 'sell_xu' AND status = 'completed' ORDER BY completed_at DESC, id DESC LIMIT 1",
+      [orderCode],
+    );
     if (rows.length === 0) {
       return { ok: false, error: "Không tìm thấy phiếu xu." };
     }
@@ -717,13 +755,13 @@ export async function approveCoinTradePayoutMysql(orderCode, note) {
       return { ok: false, error: "Khách chưa gửi đủ thông tin nhận tiền." };
     }
 
-    await conn.execute("UPDATE bando_coin_trades SET status = ?, payout_notified_at = NULL WHERE order_code = ?", [
+    await conn.execute("UPDATE bando_coin_trades SET status = ?, payout_notified_at = NULL WHERE id = ?", [
       "payout_completed",
-      orderCode,
+      trade.id,
     ]);
     await insertEvent(conn, orderCode, "coin_payout_approved", note || `Admin duyệt trả ${formatVnd(trade.totalAmount)} cho ${trade.characterName}.`);
 
-    const [nextRows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [orderCode]);
+    const [nextRows] = await conn.query("SELECT * FROM bando_coin_trades WHERE id = ? LIMIT 1", [trade.id]);
     return { ok: true, coinTrade: nextRows[0] ? mapCoinTrade(nextRows[0]) : null };
   });
 }
@@ -1144,8 +1182,8 @@ async function ensureBandoMysqlSchema(conn) {
   await conn.execute(
     `CREATE TABLE IF NOT EXISTS bando_orders (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      order_code VARCHAR(64) NOT NULL UNIQUE,
-      payment_code VARCHAR(64) NOT NULL UNIQUE,
+      order_code VARCHAR(64) NOT NULL,
+      payment_code VARCHAR(64) NOT NULL,
       character_name VARCHAR(64) NOT NULL,
       game_name VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile',
       server_name VARCHAR(96) NOT NULL DEFAULT 'default',
@@ -1161,8 +1199,11 @@ async function ensureBandoMysqlSchema(conn) {
       account_number VARCHAR(64) NOT NULL DEFAULT '',
       account_name VARCHAR(128) NOT NULL DEFAULT '',
       created_at VARCHAR(40) NOT NULL,
+      payment_expires_at VARCHAR(40) NULL,
       paid_at VARCHAR(40) NULL,
       delivered_at VARCHAR(40) NULL,
+      KEY bando_orders_order_code_idx (order_code),
+      KEY bando_orders_payment_status_idx (payment_code, status, created_at),
       KEY bando_orders_status_idx (status),
       KEY bando_orders_game_server_idx (game_name, server_name),
       KEY bando_orders_character_idx (character_name)
@@ -1224,7 +1265,7 @@ async function ensureBandoMysqlSchema(conn) {
   await conn.execute(
     `CREATE TABLE IF NOT EXISTS bando_coin_trades (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      order_code VARCHAR(64) NOT NULL UNIQUE,
+      order_code VARCHAR(64) NOT NULL,
       payment_code VARCHAR(64) NULL,
       character_name VARCHAR(64) NOT NULL,
       game_name VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile',
@@ -1242,6 +1283,7 @@ async function ensureBandoMysqlSchema(conn) {
       paid_at VARCHAR(40) NULL,
       completed_at VARCHAR(40) NULL,
       payout_notified_at VARCHAR(40) NULL,
+      KEY bando_coin_trades_order_code_idx (order_code),
       KEY bando_coin_trades_character_idx (character_name),
       KEY bando_coin_trades_game_server_idx (game_name, server_name),
       KEY bando_coin_trades_status_idx (status),
@@ -1294,6 +1336,7 @@ async function ensureBandoMysqlSchema(conn) {
   await ensureColumn(conn, "bando_orders", "bank_code", "VARCHAR(32) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_orders", "account_number", "VARCHAR(64) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_orders", "account_name", "VARCHAR(128) NOT NULL DEFAULT ''");
+  await ensureColumn(conn, "bando_orders", "payment_expires_at", "VARCHAR(40) NULL");
   await ensureColumn(conn, "bando_inventory", "game_name", "VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile'");
   await ensureColumn(conn, "bando_coin_trades", "game_name", "VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile'");
   await ensureColumn(conn, "bando_coin_trades", "received_coin_amount", "INT NOT NULL DEFAULT 0");
@@ -1320,6 +1363,12 @@ async function ensureBandoMysqlSchema(conn) {
   await ensureUniqueIndex(conn, "game_servers", "game_servers_game_code_uq", "game_name, code");
   await ensureIndex(conn, "game_servers", "game_servers_game_name_idx", "game_name, name");
   await dropIndexIfExists(conn, "bando_inventory", "bando_inventory_source_item_uq");
+  await dropIndexIfExists(conn, "bando_orders", "order_code");
+  await dropIndexIfExists(conn, "bando_orders", "payment_code");
+  await dropIndexIfExists(conn, "bando_coin_trades", "order_code");
+  await ensureIndex(conn, "bando_orders", "bando_orders_order_code_idx", "order_code");
+  await ensureIndex(conn, "bando_orders", "bando_orders_payment_status_idx", "payment_code, status, created_at");
+  await ensureIndex(conn, "bando_coin_trades", "bando_coin_trades_order_code_idx", "order_code");
   await ensureIndex(conn, "bando_orders", "bando_orders_game_server_idx", "game_name, server_name");
   await ensureIndex(conn, "bando_inventory", "bando_inventory_game_server_idx", "game_name, server_name");
   await ensureUniqueIndex(conn, "bando_inventory", "bando_inventory_game_source_item_uq", "game_name, server_name, character_name, item_id");
@@ -1482,6 +1531,28 @@ async function insertTransaction(conn, orderCode, paymentCode, amount, status, n
     "INSERT INTO bando_transactions (order_code, payment_code, amount, status, note, created_at) VALUES (?, ?, ?, ?, ?, ?)",
     [orderCode, paymentCode, amount, status, note, new Date().toISOString()],
   );
+}
+
+async function expireStaleAwaitingPayments(conn, now = new Date()) {
+  const cutoff = paymentExpiryCutoffIso(now);
+  await conn.execute(
+    "UPDATE bando_orders SET status = 'expired' WHERE status = 'awaiting_payment' AND created_at < ?",
+    [cutoff],
+  );
+  await conn.execute(
+    "UPDATE bando_coin_trades SET status = 'expired' WHERE type = 'buy_xu' AND status = 'awaiting_payment' AND created_at < ?",
+    [cutoff],
+  );
+}
+
+function paymentExpiryCutoffIso(now = new Date()) {
+  return new Date(now.getTime() - PAYMENT_CODE_TTL_MS).toISOString();
+}
+
+function paymentExpiryFromCreatedAt(createdAt) {
+  const createdAtMs = Date.parse(createdAt);
+  const baseMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+  return new Date(baseMs + PAYMENT_CODE_TTL_MS).toISOString();
 }
 
 async function readMysqlConfig() {
@@ -1813,6 +1884,7 @@ function mapOrder(row) {
     accountName: String(row.account_name ?? ""),
     bankAccount: bankAccountFromColumns(row),
     createdAt: String(row.created_at ?? ""),
+    paymentExpiresAt: row.payment_expires_at == null ? null : String(row.payment_expires_at),
     paidAt: row.paid_at == null ? null : String(row.paid_at),
     deliveredAt: row.delivered_at == null ? null : String(row.delivered_at),
   };
@@ -2196,6 +2268,7 @@ async function findOrderForTelegram(conn, orderCode) {
      FROM bando_orders o
      LEFT JOIN bando_items i ON i.code = o.item_code
      WHERE o.order_code = ?
+     ORDER BY o.id DESC
      LIMIT 1`,
     [orderCode],
   );
@@ -2203,7 +2276,7 @@ async function findOrderForTelegram(conn, orderCode) {
 }
 
 async function findCoinTradeForTelegram(conn, orderCode) {
-  const [rows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? LIMIT 1", [orderCode]);
+  const [rows] = await conn.query("SELECT * FROM bando_coin_trades WHERE order_code = ? ORDER BY id DESC LIMIT 1", [orderCode]);
   return rows[0] ? mapCoinTrade(rows[0]) : null;
 }
 
