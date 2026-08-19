@@ -7,10 +7,12 @@ const EVENT_PRUNE_INTERVAL_MS = 60_000;
 const NOISY_EVENT_TYPES = new Set(["inventory_synced"]);
 const DEFAULT_GAME_NAME = "Ninja Mobile";
 const NINJA_2D_GAME_NAME = "Ninja 2D";
+const NINJA_TRUYEN_KY_GAME_NAME = "Ninja Truyền Kỳ";
 const DEFAULT_SERVER_ITEM_SYNC_MS = 5 * 60 * 1000;
 const PAYMENT_CODE_TTL_MS = 30 * 60 * 1000;
 let mysqlDisabledUntil = 0;
 let lastEventPruneAt = 0;
+let canonicalGameNamesMigrated = false;
 const itemSyncCache = new Map();
 
 export async function listBandoStateMysql(args = {}) {
@@ -1349,6 +1351,10 @@ async function ensureBandoMysqlSchema(conn) {
   await ensureColumn(conn, "bando_bank_accounts", "callback_signature", "VARCHAR(255) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "game_servers", "game_name", "VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile'");
   await migrateLegacyGameServerGameNames(conn);
+  if (!canonicalGameNamesMigrated) {
+    await migrateCanonicalGameNames(conn);
+    canonicalGameNamesMigrated = true;
+  }
   await ensureColumn(conn, "game_servers", "socket_port_web", "VARCHAR(255) NULL");
   await ensureColumn(conn, "game_servers", "socket_key_web", "VARCHAR(255) NULL");
   await ensureColumn(conn, "game_servers", "day_open", "VARCHAR(40) NULL");
@@ -1463,6 +1469,26 @@ async function migrateLegacyGameServerGameNames(conn) {
      WHERE game_name IS NULL OR TRIM(game_name) = ''`,
     [DEFAULT_GAME_NAME],
   );
+}
+
+async function migrateCanonicalGameNames(conn) {
+  const tables = [
+    "bando_items",
+    "game_servers",
+    "bando_orders",
+    "bando_inventory",
+    "bando_coin_trades",
+    "bando_buffed_xu_logs",
+  ];
+  for (const table of tables) {
+    await conn.execute(
+      `UPDATE \`${table}\`
+       SET game_name = ?
+       WHERE LOWER(TRIM(game_name)) = LOWER(?)
+         AND CAST(game_name AS BINARY) <> CAST(? AS BINARY)`,
+      [NINJA_TRUYEN_KY_GAME_NAME, NINJA_TRUYEN_KY_GAME_NAME, NINJA_TRUYEN_KY_GAME_NAME],
+    );
+  }
 }
 
 async function migrateLegacyBuffedXuAdjustments(conn) {
@@ -2428,7 +2454,11 @@ function readIntegerEnv(name, fallback, min, max) {
 }
 
 function normalizeGameName(value) {
-  return String(value || DEFAULT_GAME_NAME).trim() || DEFAULT_GAME_NAME;
+  const gameName = String(value || DEFAULT_GAME_NAME).trim() || DEFAULT_GAME_NAME;
+  if (gameName.toLocaleLowerCase("vi-VN") === NINJA_TRUYEN_KY_GAME_NAME.toLocaleLowerCase("vi-VN")) {
+    return NINJA_TRUYEN_KY_GAME_NAME;
+  }
+  return gameName;
 }
 
 function normalizeServerName(value) {
