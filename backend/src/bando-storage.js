@@ -82,6 +82,7 @@ const memoryState = {
 
 const memoryInventoryByItemId = new Map();
 const DEFAULT_GAME_NAME = "Ninja Mobile";
+const NINJA_TRUYEN_KY_GAME_NAME = "Ninja Truyền Kỳ";
 const PAYMENT_CODE_TTL_MS = 30 * 60 * 1000;
 const memoryEventLimit = 200;
 let memoryBotConfig = createDefaultBotConfig();
@@ -1676,7 +1677,11 @@ function normalizeGameServerStatus(value) {
 }
 
 function normalizeGameName(value) {
-  return String(value || DEFAULT_GAME_NAME).trim() || DEFAULT_GAME_NAME;
+  const gameName = String(value || DEFAULT_GAME_NAME).trim() || DEFAULT_GAME_NAME;
+  if (gameName.toLocaleLowerCase("vi-VN") === NINJA_TRUYEN_KY_GAME_NAME.toLocaleLowerCase("vi-VN")) {
+    return NINJA_TRUYEN_KY_GAME_NAME;
+  }
+  return gameName;
 }
 
 function normalizeServerName(value) {

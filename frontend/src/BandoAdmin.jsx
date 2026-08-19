@@ -28,6 +28,7 @@ const apiBaseUrl = import.meta.env.VITE_API_URL?.trim() || "";
 const numberFormatter = new Intl.NumberFormat("vi-VN");
 const gameOptionsDefault = ["Ninja Mobile", "Ninja 2D"];
 const defaultGameName = "Ninja Mobile";
+const ninjaTruyenKyGameName = "Ninja Truyền Kỳ";
 const authStorageKey = "bando.adminToken";
 let authTokenMemory = readStoredAuthToken();
 const defaultWebBaseUrl = getPublicBrowserOrigin() || "http://localhost:5001";
@@ -333,7 +334,11 @@ function gameKey(gameName) {
 }
 
 function normalizeGameName(gameName) {
-  return String(gameName || defaultGameName).trim() || defaultGameName;
+  const normalized = String(gameName || defaultGameName).trim() || defaultGameName;
+  if (normalized.toLocaleLowerCase("vi-VN") === ninjaTruyenKyGameName.toLocaleLowerCase("vi-VN")) {
+    return ninjaTruyenKyGameName;
+  }
+  return normalized;
 }
 
 function profileKey(gameName, serverName) {

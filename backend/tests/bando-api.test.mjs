@@ -165,6 +165,42 @@ test("Bando API tạo đơn, khớp thanh toán và xác nhận giao hàng", asy
   }
 });
 
+test("Bando chuan hoa ten Ninja Truyen Ky truoc khi luu don", async () => {
+  const { server, baseUrl } = await listen(createApp({ serveFrontend: false }));
+  try {
+    const updateResponse = await fetch(`${baseUrl}/api/bando/bot/config`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        characterName: "TruyenKyBot",
+        gameName: "Ninja Truyền kỳ",
+        serverName: "S-Truyen-Ky",
+      }),
+    });
+    assert.equal(updateResponse.status, 200);
+    const updatePayload = await updateResponse.json();
+    assert.equal(updatePayload.config.gameName, "Ninja Truyền Kỳ");
+
+    const orderResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "KhachTruyenKy",
+        gameName: "Ninja Truyền kỳ",
+        serverName: "S-Truyen-Ky",
+        privateMessage: "muaxu 1000000",
+        coin: 5000000,
+      }),
+    });
+    assert.equal(orderResponse.status, 201);
+    const orderPayload = await orderResponse.json();
+    assert.equal(orderPayload.order.gameName, "Ninja Truyền Kỳ");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", async () => {
   const { server, baseUrl } = await listen(createApp({ serveFrontend: false }));
   try {
