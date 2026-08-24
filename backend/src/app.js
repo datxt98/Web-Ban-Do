@@ -10,6 +10,7 @@ import {
   approveBandoOrder,
   approveCoinTradePayout,
   cancelBandoRecord,
+  claimBandoDelivery,
   confirmBandoBotNotification,
   confirmBandoDelivery,
   confirmBandoPayment,
@@ -26,6 +27,7 @@ import {
   listBandoState,
   loginBandoAdmin,
   registerBandoAdmin,
+  releaseBandoDeliveryClaim,
   resolveBandoBotConfig,
   upsertBandoBankAccount,
   upsertBandoGameServer,
@@ -273,7 +275,23 @@ export function createApp(options = {}) {
   }));
 
   app.get("/api/bando/bot/deliveries/pending", authorizeBot, asyncHandler(async (req, res) => {
-    res.json(await listPendingBandoDeliveries({ gameName: req.query.gameName, serverName: req.query.serverName }));
+    const result = await listPendingBandoDeliveries({ gameName: req.query.gameName, serverName: req.query.serverName });
+    if (String(req.query.deliveryProtocol || "") !== "2") {
+      return res.json({ ...result, deliveries: [], upgradeRequired: true });
+    }
+    return res.json(result);
+  }));
+
+  app.post("/api/bando/bot/deliveries/claim", authorizeBot, asyncHandler(async (req, res) => {
+    const result = await claimBandoDelivery(req.body);
+    if (!result.ok) return res.status(409).json(result);
+    return res.json(result);
+  }));
+
+  app.post("/api/bando/bot/deliveries/release", authorizeBot, asyncHandler(async (req, res) => {
+    const result = await releaseBandoDeliveryClaim(req.body);
+    if (!result.ok) return res.status(409).json(result);
+    return res.json(result);
   }));
 
   app.post("/api/bando/payments/confirm", authorizeAdmin, asyncHandler(async (req, res) => {
@@ -304,6 +322,9 @@ export function createApp(options = {}) {
       orderCode: req.body.orderCode ?? "",
       botName: req.body.botName,
       receivedCoinAmount: req.body.receivedCoinAmount,
+      deliveryId: req.body.deliveryId,
+      deliveryKind: req.body.deliveryKind,
+      claimToken: req.body.claimToken,
     });
 
     if (!result.ok) return res.status(400).json({ ok: false, error: result.error });

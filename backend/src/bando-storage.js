@@ -29,6 +29,7 @@ import {
   approveCoinTradePayoutMysql,
   cancelBandoRecordMysql,
   cancelCoinTradePayoutInfoMysql,
+  claimDeliveryMysql,
   confirmBotNotificationMysql,
   confirmDeliveryMysql,
   confirmPaymentMysql,
@@ -46,6 +47,7 @@ import {
   listBandoGameServersMysql,
   listPendingBotNotificationsMysql,
   listPendingDeliveriesMysql,
+  releaseDeliveryClaimMysql,
   listBandoStateMysql,
   updateCoinTradePayoutInfoMysql,
   upsertBandoBankAccountMysql,
@@ -1098,6 +1100,54 @@ export async function confirmBandoBotNotification(args) {
   return { ok: false, error: "Loại thông báo không hỗ trợ." };
 }
 
+export async function claimBandoDelivery(args) {
+  const delivery = normalizeDeliveryRequest(args);
+  if (!delivery.ok) return delivery;
+
+  const mysqlResult = await claimDeliveryMysql(delivery);
+  if (mysqlResult) return mysqlResult;
+
+  const record = findMemoryDeliveryRecord(delivery);
+  if (!record) return { ok: false, error: "Không tìm thấy đúng đơn cần khóa." };
+  const waitingStatus = delivery.deliveryKind === "coin_trade" ? "awaiting_trade" : "paid";
+  const claimedStatus = delivery.deliveryKind === "coin_trade" ? "receiving" : "delivering";
+  if (record.status === claimedStatus && record.deliveryClaimToken === delivery.claimToken) {
+    return { ok: true, alreadyClaimed: true, deliveryId: delivery.deliveryId, deliveryKind: delivery.deliveryKind };
+  }
+  if (record.status !== waitingStatus) {
+    return { ok: false, error: "Đơn không còn ở trạng thái chờ giao hoặc đã được BOT khác khóa." };
+  }
+  record.status = claimedStatus;
+  record.deliveryClaimToken = delivery.claimToken;
+  record.deliveryClaimedAt = new Date().toISOString();
+  record.deliveryClaimedBy = delivery.botName;
+  pushMemoryEvent(delivery.orderCode, "delivery_claimed", `${delivery.botName} đã khóa đơn để giao dịch.`);
+  return { ok: true, deliveryId: delivery.deliveryId, deliveryKind: delivery.deliveryKind, claimedAt: record.deliveryClaimedAt };
+}
+
+export async function releaseBandoDeliveryClaim(args) {
+  const delivery = normalizeDeliveryRequest(args);
+  if (!delivery.ok) return delivery;
+
+  const mysqlResult = await releaseDeliveryClaimMysql(delivery);
+  if (mysqlResult) return mysqlResult;
+
+  const record = findMemoryDeliveryRecord(delivery);
+  if (!record) return { ok: false, error: "Không tìm thấy đúng đơn cần mở khóa." };
+  if (["completed", "awaiting_payout_info"].includes(record.status)) return { ok: true, alreadyCompleted: true };
+  const claimedStatus = delivery.deliveryKind === "coin_trade" ? "receiving" : "delivering";
+  const waitingStatus = delivery.deliveryKind === "coin_trade" ? "awaiting_trade" : "paid";
+  if (record.status !== claimedStatus || record.deliveryClaimToken !== delivery.claimToken) {
+    return { ok: false, error: "Không thể mở khóa: đơn không thuộc phiên giao dịch này." };
+  }
+  record.status = waitingStatus;
+  record.deliveryClaimToken = null;
+  record.deliveryClaimedAt = null;
+  record.deliveryClaimedBy = null;
+  pushMemoryEvent(delivery.orderCode, "delivery_released", `${delivery.botName} đã trả đơn về hàng chờ.`);
+  return { ok: true };
+}
+
 export async function confirmBandoDelivery(args) {
   const orderCode = String(args.orderCode || "").trim().toUpperCase();
   const botName = String(args.botName || "NinjaBot").trim();
@@ -1107,14 +1157,24 @@ export async function confirmBandoDelivery(args) {
     return { ok: false, error: "Thiếu mã đơn." };
   }
 
-  const mysqlResult = await confirmDeliveryMysql(orderCode, botName, { receivedCoinAmount });
+  const mysqlResult = await confirmDeliveryMysql(orderCode, botName, {
+    receivedCoinAmount,
+    deliveryId: args.deliveryId,
+    deliveryKind: args.deliveryKind,
+    claimToken: args.claimToken,
+  });
   if (mysqlResult) {
-    if (mysqlResult.ok) notifyDeliveryEvent(mysqlResult);
+    if (mysqlResult.ok && !mysqlResult.alreadyCompleted) notifyDeliveryEvent(mysqlResult);
     return mysqlResult;
   }
 
-  const memoryResult = confirmDeliveryMemory(orderCode, botName, { receivedCoinAmount });
-  if (memoryResult.ok) notifyDeliveryEvent(memoryResult);
+  const memoryResult = confirmDeliveryMemory(orderCode, botName, {
+    receivedCoinAmount,
+    deliveryId: args.deliveryId,
+    deliveryKind: args.deliveryKind,
+    claimToken: args.claimToken,
+  });
+  if (memoryResult.ok && !memoryResult.alreadyCompleted) notifyDeliveryEvent(memoryResult);
   return memoryResult;
 }
 
@@ -1932,15 +1992,23 @@ function approveOrderMemory(orderCode, note) {
 }
 
 function confirmDeliveryMemory(orderCode, botName, extra = {}) {
-  const order = memoryState.orders.find((entry) => entry.orderCode === orderCode && entry.status === "paid");
-  if (!order) return confirmCoinReceiveMemory(orderCode, botName, extra);
+  if (String(extra.deliveryKind || "").toLowerCase() === "coin_trade") {
+    return confirmCoinReceiveMemory(orderCode, botName, extra);
+  }
+  const deliveryId = Math.trunc(Number(extra.deliveryId) || 0);
+  const claimToken = String(extra.claimToken || "").trim();
+  const order = memoryState.orders.find((entry) =>
+    entry.orderCode === orderCode && (deliveryId <= 0 || entry.id === deliveryId));
   if (!order) {
-    return { ok: false, error: "Không tìm thấy đơn." };
+    if (String(extra.deliveryKind || "").toLowerCase() === "order") {
+      return { ok: false, error: "Không tìm thấy đúng đơn cần xác nhận." };
+    }
+    return confirmCoinReceiveMemory(orderCode, botName, extra);
   }
-
-  if (order.status !== "paid") {
-    return { ok: false, error: "Chỉ giao hàng khi đơn đã thanh toán đúng." };
-  }
+  if (order.status === "completed") return { ok: true, alreadyCompleted: true, order: { ...order } };
+  const validClaim = order.status === "delivering" && claimToken && order.deliveryClaimToken === claimToken;
+  const legacyDelivery = deliveryId <= 0 && !claimToken && order.status === "paid";
+  if (!validClaim && !legacyDelivery) return { ok: false, error: "Đơn chưa được client này khóa hoặc không còn chờ giao." };
 
   const item = memoryState.items.find((entry) => entry.code === order.itemCode);
   if (item && order.itemCode !== COIN_ITEM_CODE) {
@@ -1950,6 +2018,9 @@ function confirmDeliveryMemory(orderCode, botName, extra = {}) {
 
   order.status = "completed";
   order.deliveredAt = new Date().toISOString();
+  order.deliveryClaimToken = null;
+  order.deliveryClaimedAt = null;
+  order.deliveryClaimedBy = null;
   const coinTrade = memoryState.coinTrades.find((entry) => entry.orderCode === order.orderCode);
   if (coinTrade) {
     coinTrade.status = "completed";
@@ -1959,14 +2030,38 @@ function confirmDeliveryMemory(orderCode, botName, extra = {}) {
   return { ok: true, order: { ...order } };
 }
 
+function normalizeDeliveryRequest(args = {}) {
+  const deliveryId = Math.trunc(Number(args.deliveryId) || 0);
+  const deliveryKind = String(args.deliveryKind || "").trim().toLowerCase();
+  const orderCode = String(args.orderCode || "").trim().toUpperCase();
+  const claimToken = String(args.claimToken || "").trim().slice(0, 64);
+  const botName = String(args.botName || "NinjaBot").trim().slice(0, 64) || "NinjaBot";
+  if (deliveryId <= 0 || !["order", "coin_trade"].includes(deliveryKind) || !orderCode || !claimToken) {
+    return { ok: false, error: "Thiếu ID, loại đơn hoặc mã khóa giao dịch hợp lệ." };
+  }
+  return { ok: true, deliveryId, deliveryKind, orderCode, claimToken, botName };
+}
+
+function findMemoryDeliveryRecord(delivery) {
+  const records = delivery.deliveryKind === "coin_trade" ? memoryState.coinTrades : memoryState.orders;
+  return records.find((entry) => entry.id === delivery.deliveryId && entry.orderCode === delivery.orderCode) || null;
+}
+
 function confirmCoinReceiveMemory(orderCode, botName, extra = {}) {
+  const deliveryId = Math.trunc(Number(extra.deliveryId) || 0);
+  const claimToken = String(extra.claimToken || "").trim();
   const trade = memoryState.coinTrades.find(
-    (entry) => entry.orderCode === orderCode && entry.type === "sell_xu" && entry.status === "awaiting_trade",
+    (entry) => entry.orderCode === orderCode && entry.type === "sell_xu" && (deliveryId <= 0 || entry.id === deliveryId),
   );
   if (!trade) {
     return { ok: false, error: "Không tìm thấy đơn." };
   }
-  if (trade.type !== "sell_xu" || trade.status !== "awaiting_trade") {
+  if (trade.status === "awaiting_payout_info") {
+    return { ok: true, alreadyCompleted: true, coinTrade: { ...trade }, reply: buildCoinSellCompletedReply(trade) };
+  }
+  const validClaim = trade.status === "receiving" && claimToken && trade.deliveryClaimToken === claimToken;
+  const legacyDelivery = deliveryId <= 0 && !claimToken && trade.status === "awaiting_trade";
+  if (trade.type !== "sell_xu" || (!validClaim && !legacyDelivery)) {
     return { ok: false, error: "Phiếu bán xu không ở trạng thái chờ giao dịch." };
   }
   const receivedCoinAmount = Math.max(0, Math.trunc(Number(extra.receivedCoinAmount) || 0));
@@ -1976,6 +2071,9 @@ function confirmCoinReceiveMemory(orderCode, botName, extra = {}) {
   trade.status = "awaiting_payout_info";
   trade.receivedCoinAmount = receivedCoinAmount;
   trade.completedAt = new Date().toISOString();
+  trade.deliveryClaimToken = null;
+  trade.deliveryClaimedAt = null;
+  trade.deliveryClaimedBy = null;
   pushMemoryEvent(orderCode, "coin_sell_completed", `${botName} đã nhận ${receivedCoinAmount} xu từ ${trade.characterName}.`);
   return { ok: true, coinTrade: { ...trade }, reply: buildCoinSellCompletedReply(trade) };
 }
@@ -1999,6 +2097,8 @@ function toDeliveryJob(order) {
   if (order.type === "receive_coin") return order;
   if (order.itemCode === COIN_ITEM_CODE) {
     return {
+      deliveryId: order.id,
+      deliveryKind: "order",
       type: "deliver_coin",
       orderCode: order.orderCode,
       paymentCode: order.paymentCode,
@@ -2019,6 +2119,8 @@ function toDeliveryJob(order) {
     ? order.itemId
     : (memoryItem?.itemId ?? itemIdFromCode(order.itemCode));
   return {
+    deliveryId: order.id,
+    deliveryKind: "order",
     type: "deliver_item",
     orderCode: order.orderCode,
     paymentCode: order.paymentCode,
@@ -2034,6 +2136,8 @@ function toDeliveryJob(order) {
 
 function toCoinReceiveDeliveryJob(trade) {
   return {
+    deliveryId: trade.id,
+    deliveryKind: "coin_trade",
     type: "receive_coin",
     orderCode: trade.orderCode,
     paymentCode: trade.paymentCode || "",

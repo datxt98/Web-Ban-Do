@@ -165,6 +165,145 @@ test("Bando API tạo đơn, khớp thanh toán và xác nhận giao hàng", asy
   }
 });
 
+test("Bando delivery claim prevents the same order from being delivered twice", async () => {
+  const { server, baseUrl } = await listen(createApp({ serveFrontend: false }));
+  try {
+    const buyResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "ClaimBuyer",
+        serverName: "Ninja School",
+        privateMessage: "codextest 1",
+      }),
+    });
+    assert.equal(buyResponse.status, 201);
+    const buyPayload = await buyResponse.json();
+
+    const paymentResponse = await fetch(`${baseUrl}/api/bando/payments/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        paymentCode: buyPayload.order.paymentCode,
+        amount: buyPayload.order.totalAmount,
+        note: "claim test payment",
+      }),
+    });
+    assert.equal(paymentResponse.status, 200);
+
+    const pendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending?deliveryProtocol=2`);
+    const pendingPayload = await pendingResponse.json();
+    const delivery = pendingPayload.deliveries.find((entry) => entry.orderCode === buyPayload.order.orderCode);
+    assert.ok(delivery);
+    assert.ok(delivery.deliveryId > 0);
+    assert.equal(delivery.deliveryKind, "order");
+
+    const legacyPendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending`);
+    const legacyPendingPayload = await legacyPendingResponse.json();
+    assert.equal(legacyPendingPayload.upgradeRequired, true);
+    assert.deepEqual(legacyPendingPayload.deliveries, []);
+
+    const claimBody = {
+      deliveryId: delivery.deliveryId,
+      deliveryKind: delivery.deliveryKind,
+      orderCode: delivery.orderCode,
+      claimToken: "claim-token-a",
+      botName: "NinjaBot",
+    };
+    const claimResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/claim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(claimBody),
+    });
+    assert.equal(claimResponse.status, 200);
+
+    const secondClaimResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/claim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...claimBody, claimToken: "claim-token-b" }),
+    });
+    assert.equal(secondClaimResponse.status, 409);
+
+    const hiddenPendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending?deliveryProtocol=2`);
+    const hiddenPendingPayload = await hiddenPendingResponse.json();
+    assert.equal(hiddenPendingPayload.deliveries.some((entry) => entry.deliveryId === delivery.deliveryId), false);
+
+    const confirmResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...claimBody, receivedCoinAmount: 0 }),
+    });
+    assert.equal(confirmResponse.status, 200);
+    const confirmPayload = await confirmResponse.json();
+    assert.equal(confirmPayload.order.status, "completed");
+
+    const duplicateConfirmResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...claimBody, receivedCoinAmount: 0 }),
+    });
+    assert.equal(duplicateConfirmResponse.status, 200);
+    const duplicateConfirmPayload = await duplicateConfirmResponse.json();
+    assert.equal(duplicateConfirmPayload.alreadyCompleted, true);
+
+    const historyResponse = await fetch(`${baseUrl}/api/bando/history`);
+    const historyPayload = await historyResponse.json();
+    assert.equal(
+      historyPayload.events.filter((entry) => entry.orderCode === delivery.orderCode && entry.type === "delivery_completed").length,
+      1,
+    );
+
+    const releaseOrderResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        characterName: "ClaimCancelBuyer",
+        serverName: "Ninja School",
+        privateMessage: "codextest 1",
+      }),
+    });
+    const releaseOrderPayload = await releaseOrderResponse.json();
+    assert.equal(releaseOrderResponse.status, 201);
+    const releasePaymentResponse = await fetch(`${baseUrl}/api/bando/payments/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        paymentCode: releaseOrderPayload.order.paymentCode,
+        amount: releaseOrderPayload.order.totalAmount,
+        note: "release test payment",
+      }),
+    });
+    assert.equal(releasePaymentResponse.status, 200);
+    const releasePendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending?deliveryProtocol=2`);
+    const releasePendingPayload = await releasePendingResponse.json();
+    const releaseDelivery = releasePendingPayload.deliveries.find((entry) => entry.orderCode === releaseOrderPayload.order.orderCode);
+    const releaseClaimBody = {
+      deliveryId: releaseDelivery.deliveryId,
+      deliveryKind: releaseDelivery.deliveryKind,
+      orderCode: releaseDelivery.orderCode,
+      claimToken: "claim-token-release",
+      botName: "NinjaBot",
+    };
+    const releaseClaimResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/claim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(releaseClaimBody),
+    });
+    assert.equal(releaseClaimResponse.status, 200);
+    const releaseResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/release`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(releaseClaimBody),
+    });
+    assert.equal(releaseResponse.status, 200);
+    const returnedPendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending?deliveryProtocol=2`);
+    const returnedPendingPayload = await returnedPendingResponse.json();
+    assert.ok(returnedPendingPayload.deliveries.some((entry) => entry.deliveryId === releaseDelivery.deliveryId));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("Bando chuan hoa ten Ninja Truyen Ky truoc khi luu don", async () => {
   const { server, baseUrl } = await listen(createApp({ serveFrontend: false }));
   try {
@@ -313,7 +452,7 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     assert.equal(sellPayload.coinTrade.totalAmount, 10000);
     assert.match(sellPayload.coinTrade.orderCode, safeCoinTradeCodePattern);
 
-    const pendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending`);
+    const pendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending?deliveryProtocol=2`);
     assert.equal(pendingResponse.status, 200);
     const pendingPayload = await pendingResponse.json();
     assert.ok(pendingPayload.deliveries.some((delivery) => delivery.type === "deliver_coin" && delivery.orderCode === buyPayload.order.orderCode));
@@ -428,7 +567,7 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     const approvePayoutPayload = await approvePayoutResponse.json();
     assert.equal(approvePayoutPayload.coinTrade.status, "payout_completed");
 
-    const payoutNotificationResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending`);
+    const payoutNotificationResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending?deliveryProtocol=2`);
     assert.equal(payoutNotificationResponse.status, 200);
     const payoutNotificationPayload = await payoutNotificationResponse.json();
     const payoutNotification = payoutNotificationPayload.notifications.find(
@@ -854,7 +993,7 @@ test("Bando API duyệt tay đơn hàng và đưa vào danh sách chờ BOT giao
     assert.equal(approvePayload.order.status, "paid");
     assert.equal(approvePayload.deliveryJob.itemId, 900002);
 
-    const pendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending`);
+    const pendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending?deliveryProtocol=2`);
     assert.equal(pendingResponse.status, 200);
     const pendingPayload = await pendingResponse.json();
     assert.ok(pendingPayload.deliveries.some((delivery) => delivery.orderCode === orderPayload.order.orderCode));

@@ -552,6 +552,82 @@ export async function listPendingDeliveriesMysql(args = {}) {
   });
 }
 
+export async function claimDeliveryMysql(args = {}) {
+  return withBandoConnection(async (conn) => {
+    const delivery = normalizeDeliveryIdentity(args);
+    if (!delivery.ok) return delivery;
+
+    await conn.beginTransaction();
+    try {
+      const table = delivery.kind === "coin_trade" ? "bando_coin_trades" : "bando_orders";
+      const waitingStatus = delivery.kind === "coin_trade" ? "awaiting_trade" : "paid";
+      const claimedStatus = delivery.kind === "coin_trade" ? "receiving" : "delivering";
+      const [rows] = await conn.query(
+        `SELECT * FROM \`${table}\` WHERE id = ? AND order_code = ? FOR UPDATE`,
+        [delivery.id, delivery.orderCode],
+      );
+      if (rows.length === 0) {
+        await conn.rollback();
+        return { ok: false, error: "Không tìm thấy đúng đơn cần khóa." };
+      }
+
+      const row = rows[0];
+      if (delivery.kind === "coin_trade" && String(row.type || "") !== "sell_xu") {
+        await conn.rollback();
+        return { ok: false, error: "Phiếu xu không thuộc loại BOT nhận xu." };
+      }
+      if (String(row.status || "") === claimedStatus && String(row.delivery_claim_token || "") === delivery.claimToken) {
+        await conn.commit();
+        return { ok: true, alreadyClaimed: true, deliveryId: delivery.id, deliveryKind: delivery.kind };
+      }
+      if (String(row.status || "") !== waitingStatus) {
+        await conn.rollback();
+        return { ok: false, error: "Đơn không còn ở trạng thái chờ giao hoặc đã được BOT khác khóa." };
+      }
+
+      const claimedAt = new Date().toISOString();
+      await conn.execute(
+        `UPDATE \`${table}\`
+         SET status = ?, delivery_claim_token = ?, delivery_claimed_at = ?, delivery_claimed_by = ?
+         WHERE id = ?`,
+        [claimedStatus, delivery.claimToken, claimedAt, delivery.botName, delivery.id],
+      );
+      await insertEvent(conn, delivery.orderCode, "delivery_claimed", `${delivery.botName} đã khóa đơn để giao dịch.`);
+      await conn.commit();
+      return { ok: true, deliveryId: delivery.id, deliveryKind: delivery.kind, claimedAt };
+    } catch (error) {
+      await conn.rollback().catch(() => undefined);
+      throw error;
+    }
+  });
+}
+
+export async function releaseDeliveryClaimMysql(args = {}) {
+  return withBandoConnection(async (conn) => {
+    const delivery = normalizeDeliveryIdentity(args);
+    if (!delivery.ok) return delivery;
+
+    const table = delivery.kind === "coin_trade" ? "bando_coin_trades" : "bando_orders";
+    const waitingStatus = delivery.kind === "coin_trade" ? "awaiting_trade" : "paid";
+    const claimedStatus = delivery.kind === "coin_trade" ? "receiving" : "delivering";
+    const [result] = await conn.execute(
+      `UPDATE \`${table}\`
+       SET status = ?, delivery_claim_token = NULL, delivery_claimed_at = NULL, delivery_claimed_by = NULL
+       WHERE id = ? AND order_code = ? AND status = ? AND delivery_claim_token = ?`,
+      [waitingStatus, delivery.id, delivery.orderCode, claimedStatus, delivery.claimToken],
+    );
+    if (result.affectedRows === 0) {
+      const [rows] = await conn.query(`SELECT status FROM \`${table}\` WHERE id = ? AND order_code = ? LIMIT 1`, [delivery.id, delivery.orderCode]);
+      if (rows.length > 0 && ["completed", "awaiting_payout_info"].includes(String(rows[0].status || ""))) {
+        return { ok: true, alreadyCompleted: true };
+      }
+      return { ok: false, error: "Không thể mở khóa: đơn không thuộc phiên giao dịch này." };
+    }
+    await insertEvent(conn, delivery.orderCode, "delivery_released", `${delivery.botName} đã trả đơn về hàng chờ.`);
+    return { ok: true };
+  });
+}
+
 export async function listPendingBotNotificationsMysql(args = {}) {
   return withBandoConnection(async (conn) => {
     const gameName = normalizeGameName(args.gameName);
@@ -592,68 +668,103 @@ export async function confirmBotNotificationMysql(orderCode, type) {
 
 export async function confirmDeliveryMysql(orderCode, botName, extra = {}) {
   return withBandoConnection(async (conn) => {
-    const [rows] = await conn.query(
-      "SELECT * FROM bando_orders WHERE order_code = ? AND status = 'paid' ORDER BY paid_at DESC, id DESC LIMIT 1",
-      [orderCode],
-    );
-    if (rows.length === 0) return confirmCoinReceiveMysql(conn, orderCode, botName, extra);
+    const deliveryKind = String(extra.deliveryKind || "").trim().toLowerCase();
+    if (deliveryKind === "coin_trade") return confirmCoinReceiveMysql(conn, orderCode, botName, extra);
 
-    if (rows.length === 0) {
-      return { ok: false, error: "Không tìm thấy đơn." };
+    await conn.beginTransaction();
+    try {
+      const deliveryId = Math.trunc(Number(extra.deliveryId) || 0);
+      const claimToken = String(extra.claimToken || "").trim();
+      const sql = deliveryId > 0
+        ? "SELECT * FROM bando_orders WHERE id = ? AND order_code = ? FOR UPDATE"
+        : "SELECT * FROM bando_orders WHERE order_code = ? ORDER BY paid_at DESC, id DESC LIMIT 1 FOR UPDATE";
+      const params = deliveryId > 0 ? [deliveryId, orderCode] : [orderCode];
+      const [rows] = await conn.query(sql, params);
+      if (rows.length === 0) {
+        await conn.rollback();
+        if (deliveryKind === "order") return { ok: false, error: "Không tìm thấy đúng đơn cần xác nhận." };
+        return confirmCoinReceiveMysql(conn, orderCode, botName, extra);
+      }
+
+      const row = rows[0];
+      const order = mapOrder(row);
+      if (order.status === "completed") {
+        await conn.commit();
+        return { ok: true, alreadyCompleted: true, order };
+      }
+      const validClaim = order.status === "delivering" && claimToken && String(row.delivery_claim_token || "") === claimToken;
+      const legacyDelivery = deliveryId <= 0 && !claimToken && order.status === "paid";
+      if (!validClaim && !legacyDelivery) {
+        await conn.rollback();
+        return { ok: false, error: "Đơn chưa được client này khóa hoặc không còn chờ giao." };
+      }
+
+      const deliveredAt = new Date().toISOString();
+      await conn.execute(
+        "UPDATE bando_orders SET status = ?, delivered_at = ?, delivery_claim_token = NULL, delivery_claimed_at = NULL, delivery_claimed_by = NULL WHERE id = ?",
+        ["completed", deliveredAt, order.id],
+      );
+      await conn.execute("UPDATE bando_items SET stock = GREATEST(stock - ?, 0), updated_at = ? WHERE code = ?", [
+        order.quantity,
+        deliveredAt,
+        order.itemCode,
+      ]);
+      await conn.execute("UPDATE bando_coin_trades SET status = ?, completed_at = ? WHERE order_code = ? AND status = 'paid'", [
+        "completed",
+        deliveredAt,
+        orderCode,
+      ]);
+      await insertEvent(conn, orderCode, "delivery_completed", `${botName} đã giao ${order.quantity} ${order.itemName}.`);
+      await conn.commit();
+      return { ok: true, order: { ...order, status: "completed", deliveredAt } };
+    } catch (error) {
+      await conn.rollback().catch(() => undefined);
+      throw error;
     }
-
-    const order = mapOrder(rows[0]);
-    if (order.status !== "paid") {
-      return { ok: false, error: "Chỉ giao hàng khi đơn đã thanh toán đúng." };
-    }
-
-    const deliveredAt = new Date().toISOString();
-    await conn.execute("UPDATE bando_orders SET status = ?, delivered_at = ? WHERE id = ?", [
-      "completed",
-      deliveredAt,
-      order.id,
-    ]);
-    await conn.execute("UPDATE bando_items SET stock = GREATEST(stock - ?, 0), updated_at = ? WHERE code = ?", [
-      order.quantity,
-      deliveredAt,
-      order.itemCode,
-    ]);
-    await conn.execute("UPDATE bando_coin_trades SET status = ?, completed_at = ? WHERE order_code = ? AND status = 'paid'", [
-      "completed",
-      deliveredAt,
-      orderCode,
-    ]);
-    await insertEvent(conn, orderCode, "delivery_completed", `${botName} đã giao ${order.quantity} ${order.itemName}.`);
-
-    return { ok: true, order: { ...order, status: "completed", deliveredAt } };
   });
 }
 
 async function confirmCoinReceiveMysql(conn, orderCode, botName, extra = {}) {
-  const [rows] = await conn.query(
-    "SELECT * FROM bando_coin_trades WHERE order_code = ? AND type = 'sell_xu' AND status = 'awaiting_trade' ORDER BY id DESC LIMIT 1",
-    [orderCode],
-  );
+  const deliveryId = Math.trunc(Number(extra.deliveryId) || 0);
+  const claimToken = String(extra.claimToken || "").trim();
+  const managesTransaction = deliveryId > 0 || Boolean(claimToken);
+  if (managesTransaction) await conn.beginTransaction();
+  const sql = deliveryId > 0
+    ? "SELECT * FROM bando_coin_trades WHERE id = ? AND order_code = ? AND type = 'sell_xu' FOR UPDATE"
+    : "SELECT * FROM bando_coin_trades WHERE order_code = ? AND type = 'sell_xu' ORDER BY id DESC LIMIT 1 FOR UPDATE";
+  const params = deliveryId > 0 ? [deliveryId, orderCode] : [orderCode];
+  const [rows] = await conn.query(sql, params);
   if (rows.length === 0) {
+    if (managesTransaction) await conn.rollback();
     return { ok: false, error: "Khong tim thay don." };
   }
 
-  const trade = mapCoinTrade(rows[0]);
-  if (trade.type !== "sell_xu" || trade.status !== "awaiting_trade") {
+  const row = rows[0];
+  const trade = mapCoinTrade(row);
+  if (trade.status === "awaiting_payout_info") {
+    if (managesTransaction) await conn.commit();
+    return { ok: true, alreadyCompleted: true, coinTrade: trade, reply: buildCoinSellCompletedReply(trade) };
+  }
+  const validClaim = trade.status === "receiving" && claimToken && String(row.delivery_claim_token || "") === claimToken;
+  const legacyDelivery = deliveryId <= 0 && !claimToken && trade.status === "awaiting_trade";
+  if (trade.type !== "sell_xu" || (!validClaim && !legacyDelivery)) {
+    if (managesTransaction) await conn.rollback();
     return { ok: false, error: "Phieu ban xu khong o trang thai cho giao dich." };
   }
 
   const receivedCoinAmount = Math.max(0, Math.trunc(Number(extra.receivedCoinAmount) || 0));
   if (receivedCoinAmount < trade.coinAmount) {
+    if (managesTransaction) await conn.rollback();
     return { ok: false, error: `BOT moi nhan ${receivedCoinAmount} xu, chua du ${trade.coinAmount} xu.` };
   }
 
   const completedAt = new Date().toISOString();
   await conn.execute(
-    "UPDATE bando_coin_trades SET status = ?, received_coin_amount = ?, completed_at = ? WHERE id = ?",
+    "UPDATE bando_coin_trades SET status = ?, received_coin_amount = ?, completed_at = ?, delivery_claim_token = NULL, delivery_claimed_at = NULL, delivery_claimed_by = NULL WHERE id = ?",
     ["awaiting_payout_info", receivedCoinAmount, completedAt, trade.id],
   );
   await insertEvent(conn, orderCode, "coin_sell_completed", `${botName} da nhan ${receivedCoinAmount} xu tu ${trade.characterName}.`);
+  if (managesTransaction) await conn.commit();
 
   const nextTrade = { ...trade, status: "awaiting_payout_info", receivedCoinAmount, completedAt };
   return { ok: true, coinTrade: nextTrade, reply: buildCoinSellCompletedReply(nextTrade) };
@@ -1204,6 +1315,9 @@ async function ensureBandoMysqlSchema(conn) {
       payment_expires_at VARCHAR(40) NULL,
       paid_at VARCHAR(40) NULL,
       delivered_at VARCHAR(40) NULL,
+      delivery_claim_token VARCHAR(64) NULL,
+      delivery_claimed_at VARCHAR(40) NULL,
+      delivery_claimed_by VARCHAR(64) NULL,
       KEY bando_orders_order_code_idx (order_code),
       KEY bando_orders_payment_status_idx (payment_code, status, created_at),
       KEY bando_orders_status_idx (status),
@@ -1285,6 +1399,9 @@ async function ensureBandoMysqlSchema(conn) {
       paid_at VARCHAR(40) NULL,
       completed_at VARCHAR(40) NULL,
       payout_notified_at VARCHAR(40) NULL,
+      delivery_claim_token VARCHAR(64) NULL,
+      delivery_claimed_at VARCHAR(40) NULL,
+      delivery_claimed_by VARCHAR(64) NULL,
       KEY bando_coin_trades_order_code_idx (order_code),
       KEY bando_coin_trades_character_idx (character_name),
       KEY bando_coin_trades_game_server_idx (game_name, server_name),
@@ -1339,6 +1456,9 @@ async function ensureBandoMysqlSchema(conn) {
   await ensureColumn(conn, "bando_orders", "account_number", "VARCHAR(64) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_orders", "account_name", "VARCHAR(128) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_orders", "payment_expires_at", "VARCHAR(40) NULL");
+  await ensureColumn(conn, "bando_orders", "delivery_claim_token", "VARCHAR(64) NULL");
+  await ensureColumn(conn, "bando_orders", "delivery_claimed_at", "VARCHAR(40) NULL");
+  await ensureColumn(conn, "bando_orders", "delivery_claimed_by", "VARCHAR(64) NULL");
   await ensureColumn(conn, "bando_inventory", "game_name", "VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile'");
   await ensureColumn(conn, "bando_coin_trades", "game_name", "VARCHAR(64) NOT NULL DEFAULT 'Ninja Mobile'");
   await ensureColumn(conn, "bando_coin_trades", "received_coin_amount", "INT NOT NULL DEFAULT 0");
@@ -1346,6 +1466,9 @@ async function ensureBandoMysqlSchema(conn) {
   await ensureColumn(conn, "bando_coin_trades", "account_number", "VARCHAR(64) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_coin_trades", "account_name", "VARCHAR(128) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_coin_trades", "payout_notified_at", "VARCHAR(40) NULL");
+  await ensureColumn(conn, "bando_coin_trades", "delivery_claim_token", "VARCHAR(64) NULL");
+  await ensureColumn(conn, "bando_coin_trades", "delivery_claimed_at", "VARCHAR(40) NULL");
+  await ensureColumn(conn, "bando_coin_trades", "delivery_claimed_by", "VARCHAR(64) NULL");
   await ensureColumn(conn, "bando_bank_accounts", "bank_code", "VARCHAR(32) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_bank_accounts", "payment_prefix", "VARCHAR(32) NOT NULL DEFAULT ''");
   await ensureColumn(conn, "bando_bank_accounts", "callback_signature", "VARCHAR(255) NOT NULL DEFAULT ''");
@@ -1916,6 +2039,18 @@ function mapOrder(row) {
   };
 }
 
+function normalizeDeliveryIdentity(args = {}) {
+  const id = Math.trunc(Number(args.deliveryId) || 0);
+  const kind = String(args.deliveryKind || "").trim().toLowerCase();
+  const orderCode = String(args.orderCode || "").trim().toUpperCase();
+  const claimToken = String(args.claimToken || "").trim().slice(0, 64);
+  const botName = String(args.botName || "NinjaBot").trim().slice(0, 64) || "NinjaBot";
+  if (id <= 0 || !["order", "coin_trade"].includes(kind) || !orderCode || !claimToken) {
+    return { ok: false, error: "Thiếu ID, loại đơn hoặc mã khóa giao dịch hợp lệ." };
+  }
+  return { ok: true, id, kind, orderCode, claimToken, botName };
+}
+
 function mapCoinTrade(row) {
   return {
     id: toNumber(row.id, 0),
@@ -1955,6 +2090,8 @@ function bankAccountFromColumns(row) {
 
 function toCoinReceiveDeliveryJob(trade) {
   return {
+    deliveryId: trade.id,
+    deliveryKind: "coin_trade",
     type: "receive_coin",
     orderCode: trade.orderCode,
     paymentCode: trade.paymentCode || "",
