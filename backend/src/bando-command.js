@@ -41,17 +41,23 @@ export function parseCoinCommand(message) {
   const normalized = normalizeCommandText(message);
   const compact = normalized.replace(/\s+/g, "");
 
-  if (compact === "muaxu" || compact === "banxu" || normalized === "mua xu" || normalized === "ban xu") {
+  if (/^(ban xu|banxu)(?:$|\s|\+|x)/.test(normalized)) {
     return {
       ok: false,
       isCoinCommand: true,
-      error: compact.startsWith("mua")
-        ? "Cu phap mua xu: muaxu <so xu>. Vi du: muaxu 200000."
-        : "Cu phap ban xu: banxu <so xu>. Vi du: banxu 260000.",
+      error: "Lenh banxu da huy. Muon ban xu, hay moi giao dich BOT va dat so xu muon ban.",
     };
   }
 
-  const match = normalized.match(/^(mua xu|muaxu|ban xu|banxu)\s*(?:\+|x|\s)\s*([\d.,]{1,16})$/);
+  if (compact === "muaxu" || normalized === "mua xu") {
+    return {
+      ok: false,
+      isCoinCommand: true,
+      error: "Cu phap mua xu: muaxu <so xu>. Vi du: muaxu 1000000.",
+    };
+  }
+
+  const match = normalized.match(/^(mua xu|muaxu)\s*(?:\+|x|\s)\s*([\d.,]{1,16})$/);
   if (!match) return { ok: false, isCoinCommand: false };
 
   const coinAmount = Number(String(match[2]).replace(/[.,\s]/g, ""));
@@ -63,21 +69,18 @@ export function parseCoinCommand(message) {
     };
   }
 
-  const isSellToBot = match[1].includes("ban");
   if (coinAmount < MIN_COIN_TRADE_AMOUNT) {
     return {
       ok: false,
       isCoinCommand: true,
-      error: isSellToBot
-        ? `So xu toi thieu co the ban cho BOT la ${formatXu(MIN_COIN_TRADE_AMOUNT)}.`
-        : `So xu toi thieu co the mua cua BOT la ${formatXu(MIN_COIN_TRADE_AMOUNT)}.`,
+      error: `So xu toi thieu co the mua cua BOT la ${formatXu(MIN_COIN_TRADE_AMOUNT)}.`,
     };
   }
 
   return {
     ok: true,
     isCoinCommand: true,
-    type: isSellToBot ? "sell_xu" : "buy_xu",
+    type: "buy_xu",
     coinAmount,
   };
 }
@@ -156,13 +159,13 @@ export function buildHelpReplies(items) {
 
   if (examples.length === 0) {
     return [
-      "Lenh BOT: chat 'xem' de xem bang gia, 'muaxu <so xu>' de mua xu, 'banxu <so xu>' de ban xu cho BOT.",
+      "Lenh BOT: chat 'xem' de xem bang gia, 'muaxu <so xu>' de mua xu. Muon ban xu, hay moi giao dich BOT.",
       "Shop dang chua ban vat pham khac.",
     ];
   }
 
   return [
-    "Lenh BOT: chat 'xem' de xem bang gia, 'muaxu <so xu>' de mua xu, 'banxu <so xu>' de ban xu cho BOT.",
+    "Lenh BOT: chat 'xem' de xem bang gia, 'muaxu <so xu>' de mua xu. Muon ban xu, hay moi giao dich BOT.",
     `Mua hang: ${examples[0]} hoac tenmua+soluong. Vi du: ${examples.join(", ")}.`,
     "Sau khi tao don, BOT se tra ma giao dich va so tien can chuyen.",
   ];
@@ -245,14 +248,6 @@ export function buildCoinBuyOrderReply(args) {
 
   reply.push("Sau khi thanh toan dung ma, hay moi giao dich BOT de nhan xu.");
   return reply.join(" ");
-}
-
-export function buildCoinSellRequestReply(args) {
-  return [
-    `Da tao phieu ${args.orderCode}. Ban ${formatXu(args.coinAmount)} cho BOT = ${formatVnd(args.totalAmount)}.`,
-    "Hay moi giao dich BOT va dat dung so xu tren.",
-    "Sau khi giao xong, BOT se hoi thong tin ngan hang nhan tien.",
-  ].join(" ");
 }
 
 export function buildCoinSellCompletedReply(args) {

@@ -4,7 +4,6 @@ import {
   MIN_COIN_TRADE_AMOUNT,
   buildCoinBuyOrderReply,
   buildCoinSellCompletedReply,
-  buildCoinSellRequestReply,
   buildCatalogReplies,
   buildHelpReplies,
   buildOrderReply,
@@ -452,25 +451,14 @@ export async function createBandoOrderFromChat(args) {
   const coinCommand = parseCoinCommand(privateMessage);
   if (coinCommand.isCoinCommand) {
     if (!coinCommand.ok) return { ok: false, error: coinCommand.error };
-    if (coinCommand.type === "buy_xu") {
-      return createCoinBuyOrderFromChat({
-        state,
-        botConfig,
-        characterName,
-        gameName,
-        serverName,
-        privateMessage,
-        botCoinAmount,
-        coinAmount: coinCommand.coinAmount,
-      });
-    }
-    return createCoinSellRequestFromChat({
+    return createCoinBuyOrderFromChat({
       state,
       botConfig,
       characterName,
       gameName,
       serverName,
       privateMessage,
+      botCoinAmount,
       coinAmount: coinCommand.coinAmount,
     });
   }
@@ -655,59 +643,6 @@ async function createCoinBuyOrderFromChat(args) {
     }),
   };
   notifyOrderCreated("coin_buy_order_created", { order, coinTrade, bankAccount });
-  return result;
-}
-
-async function createCoinSellRequestFromChat(args) {
-  const importConfig = args.botConfig?.coinTrade?.importXu ?? {};
-  if (importConfig.enabled === false) {
-    return { ok: false, error: "Muc ban xu cho BOT dang tat tren web." };
-  }
-
-  const orderCode = createCoinTradeCode(args.state.coinTrades, "SX");
-  const totalAmount = calculateCustomerReceiveVnd(args.coinAmount, importConfig.rate);
-  const now = new Date().toISOString();
-  const coinTrade = {
-    orderCode,
-    paymentCode: "",
-    characterName: args.characterName,
-    gameName: args.gameName,
-    serverName: args.serverName,
-    type: "sell_xu",
-    coinAmount: args.coinAmount,
-    receivedCoinAmount: 0,
-    rate: Number(importConfig.rate) || 0,
-    totalAmount,
-    status: "awaiting_trade",
-    bankName: "",
-    accountNumber: "",
-    accountName: "",
-    createdAt: now,
-    paidAt: null,
-    completedAt: null,
-    privateMessage: args.privateMessage,
-  };
-
-  if (args.state.storage === "mysql" && (await insertBandoCoinTradeMysql(coinTrade))) {
-    const result = {
-      ok: true,
-      coinTrade,
-      reply: buildCoinSellRequestReply(coinTrade),
-    };
-    notifyOrderCreated("coin_sell_request_created", { coinTrade });
-    return result;
-  }
-
-  coinTrade.id = memoryCoinTradeId++;
-  memoryState.coinTrades.unshift(coinTrade);
-  pushMemoryEvent(orderCode, "coin_sell_requested", `${args.characterName} tao phieu ban ${args.coinAmount} xu cho BOT.`);
-
-  const result = {
-    ok: true,
-    coinTrade,
-    reply: buildCoinSellRequestReply(coinTrade),
-  };
-  notifyOrderCreated("coin_sell_request_created", { coinTrade });
   return result;
 }
 
@@ -1070,9 +1005,6 @@ export async function listPendingBandoDeliveries(args = {}) {
       ...memoryState.orders
       .filter((order) => order.status === "paid" && matchesGame(order.gameName, gameName) && matchesServer(order.serverName, serverName))
       .map((order) => toDeliveryJob({ ...order, itemId: itemsByCode.get(order.itemCode)?.itemId ?? itemIdFromCode(order.itemCode) })),
-      ...memoryState.coinTrades
-        .filter((trade) => trade.type === "sell_xu" && trade.status === "awaiting_trade" && matchesGame(trade.gameName, gameName) && matchesServer(trade.serverName, serverName))
-        .map(toCoinReceiveDeliveryJob),
     ],
     notifications: memoryState.coinTrades
       .filter((trade) => trade.type === "sell_xu" && trade.status === "payout_completed" && !trade.payoutNotifiedAt && matchesGame(trade.gameName, gameName) && matchesServer(trade.serverName, serverName))
@@ -2131,26 +2063,6 @@ function toDeliveryJob(order) {
     itemId,
     itemName: order.itemName,
     quantity: order.quantity,
-  };
-}
-
-function toCoinReceiveDeliveryJob(trade) {
-  return {
-    deliveryId: trade.id,
-    deliveryKind: "coin_trade",
-    type: "receive_coin",
-    orderCode: trade.orderCode,
-    paymentCode: trade.paymentCode || "",
-    characterName: trade.characterName,
-    gameName: trade.gameName || DEFAULT_GAME_NAME,
-    serverName: trade.serverName,
-    itemCode: COIN_ITEM_CODE,
-    itemId: -1,
-    itemName: COIN_ITEM_NAME,
-    quantity: trade.coinAmount,
-    coinAmount: trade.coinAmount,
-    totalAmount: trade.totalAmount,
-    rate: trade.rate,
   };
 }
 

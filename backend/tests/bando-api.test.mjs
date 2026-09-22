@@ -446,17 +446,15 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
         privateMessage: "banxu 2600000",
       }),
     });
-    assert.equal(sellResponse.status, 200);
+    assert.equal(sellResponse.status, 400);
     const sellPayload = await sellResponse.json();
-    assert.equal(sellPayload.coinTrade.type, "sell_xu");
-    assert.equal(sellPayload.coinTrade.totalAmount, 10000);
-    assert.match(sellPayload.coinTrade.orderCode, safeCoinTradeCodePattern);
+    assert.match(sellPayload.error, /Lenh banxu da huy/);
 
     const pendingResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/pending?deliveryProtocol=2`);
     assert.equal(pendingResponse.status, 200);
     const pendingPayload = await pendingResponse.json();
     assert.ok(pendingPayload.deliveries.some((delivery) => delivery.type === "deliver_coin" && delivery.orderCode === buyPayload.order.orderCode));
-    assert.ok(pendingPayload.deliveries.some((delivery) => delivery.type === "receive_coin" && delivery.orderCode === sellPayload.coinTrade.orderCode));
+    assert.equal(pendingPayload.deliveries.some((delivery) => delivery.type === "receive_coin"), false);
 
     const buyDeliveryResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/confirm`, {
       method: "POST",
@@ -468,25 +466,11 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     });
     assert.equal(buyDeliveryResponse.status, 200);
 
-    const sellDeliveryResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/confirm`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        orderCode: sellPayload.coinTrade.orderCode,
-        botName: "NinjaBot",
-        receivedCoinAmount: 2600000,
-      }),
-    });
-    assert.equal(sellDeliveryResponse.status, 200);
-    const sellDeliveryPayload = await sellDeliveryResponse.json();
-    assert.equal(sellDeliveryPayload.coinTrade.status, "awaiting_payout_info");
-    assert.match(sellDeliveryPayload.reply, /NganHang STK TenTaiKhoan/);
-
     const autoSmallReceiveResponse = await fetch(`${baseUrl}/api/bando/bot/coin-trades/receive`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        characterName: "KhachAutoBanXu",
+        characterName: "KhachBanXu",
         botName: "NinjaBot",
         serverName: "Ninja School",
         receivedCoinAmount: 500000,
@@ -500,7 +484,7 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        characterName: "KhachAutoBanXu",
+        characterName: "KhachBanXu",
         botName: "NinjaBot",
         serverName: "Ninja School",
         receivedCoinAmount: 2600000,
@@ -515,20 +499,6 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     assert.equal(autoReceivePayload.coinTrade.totalAmount, 10000);
     assert.match(autoReceivePayload.coinTrade.orderCode, safeCoinTradeCodePattern);
     assert.match(autoReceivePayload.reply, /So tien ban nhan: 10\.000 VND/);
-
-    const autoPayoutResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        characterName: "KhachAutoBanXu",
-        serverName: "Ninja School",
-        privateMessage: "MB 0999999999 KHACH AUTO",
-      }),
-    });
-    assert.equal(autoPayoutResponse.status, 200);
-    const autoPayoutPayload = await autoPayoutResponse.json();
-    assert.equal(autoPayoutPayload.coinTrade.orderCode, autoReceivePayload.coinTrade.orderCode);
-    assert.equal(autoPayoutPayload.coinTrade.status, "completed");
 
     const invalidPayoutResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
       method: "POST",
@@ -558,7 +528,7 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     assert.equal(payoutPayload.coinTrade.accountNumber, "0123456789");
     assert.equal(payoutPayload.coinTrade.status, "completed");
 
-    const approvePayoutResponse = await fetch(`${baseUrl}/api/bando/coin-trades/${sellPayload.coinTrade.orderCode}/payout/approve`, {
+    const approvePayoutResponse = await fetch(`${baseUrl}/api/bando/coin-trades/${autoReceivePayload.coinTrade.orderCode}/payout/approve`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ note: "duyet tra tien test" }),
@@ -571,7 +541,7 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     assert.equal(payoutNotificationResponse.status, 200);
     const payoutNotificationPayload = await payoutNotificationResponse.json();
     const payoutNotification = payoutNotificationPayload.notifications.find(
-      (notification) => notification.orderCode === sellPayload.coinTrade.orderCode && notification.type === "payout_completed",
+      (notification) => notification.orderCode === autoReceivePayload.coinTrade.orderCode && notification.type === "payout_completed",
     );
     assert.ok(payoutNotification);
     assert.match(payoutNotification.message, /Da thanh toan so tien 10\.000 VND cho don/);
@@ -580,33 +550,24 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        orderCode: sellPayload.coinTrade.orderCode,
+        orderCode: autoReceivePayload.coinTrade.orderCode,
         type: "payout_completed",
       }),
     });
     assert.equal(confirmNotificationResponse.status, 200);
 
-    const sellCancelResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+    const sellCancelResponse = await fetch(`${baseUrl}/api/bando/bot/coin-trades/receive`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         characterName: "KhachHuyStk",
-        serverName: "Ninja School",
-        privateMessage: "banxu 2600000",
-      }),
-    });
-    assert.equal(sellCancelResponse.status, 200);
-    const sellCancelPayload = await sellCancelResponse.json();
-    const sellCancelDeliveryResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/confirm`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        orderCode: sellCancelPayload.coinTrade.orderCode,
         botName: "NinjaBot",
+        serverName: "Ninja School",
         receivedCoinAmount: 2600000,
       }),
     });
-    assert.equal(sellCancelDeliveryResponse.status, 200);
+    assert.equal(sellCancelResponse.status, 201);
+    const sellCancelPayload = await sellCancelResponse.json();
     const cancelPayoutResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -624,7 +585,7 @@ test("Bando API xu: xem bang gia, mua xu, ban xu va luu thong tin nhan tien", as
     assert.equal(historyResponse.status, 200);
     const historyPayload = await historyResponse.json();
     assert.ok(historyPayload.coinTrades.some((trade) => trade.orderCode === buyPayload.order.orderCode));
-    assert.ok(historyPayload.coinTrades.some((trade) => trade.orderCode === sellPayload.coinTrade.orderCode && trade.accountName === "NGUYEN VAN A" && trade.status === "payout_completed" && trade.payoutNotifiedAt));
+    assert.ok(historyPayload.coinTrades.some((trade) => trade.orderCode === autoReceivePayload.coinTrade.orderCode && trade.accountName === "NGUYEN VAN A" && trade.status === "payout_completed" && trade.payoutNotifiedAt));
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -683,30 +644,20 @@ test("Bando API thong ke web gom tat ca game server va khoa sua xu buff", async 
     });
     assert.equal(payResponse.status, 200);
 
-    const sellResponse = await fetch(`${baseUrl}/api/bando/bot/orders`, {
+    const sellResponse = await fetch(`${baseUrl}/api/bando/bot/coin-trades/receive`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         characterName: "StatsSeller",
+        botName: "StatsBot",
         gameName: "Ninja 2D",
         serverName: "S-Stats",
-        privateMessage: "banxu 1000000",
-      }),
-    });
-    assert.equal(sellResponse.status, 200);
-    const sellPayload = await sellResponse.json();
-    assert.equal(sellPayload.coinTrade.totalAmount, 4000);
-
-    const receiveResponse = await fetch(`${baseUrl}/api/bando/bot/deliveries/confirm`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        orderCode: sellPayload.coinTrade.orderCode,
-        botName: "StatsBot",
         receivedCoinAmount: 1000000,
       }),
     });
-    assert.equal(receiveResponse.status, 200);
+    assert.equal(sellResponse.status, 201);
+    const sellPayload = await sellResponse.json();
+    assert.equal(sellPayload.coinTrade.totalAmount, 4000);
 
     const statsResponse = await fetch(statsUrl);
     assert.equal(statsResponse.status, 200);

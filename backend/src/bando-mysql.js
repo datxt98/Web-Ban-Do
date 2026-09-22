@@ -536,18 +536,6 @@ export async function listPendingDeliveriesMysql(args = {}) {
       itemId: row.item_id == null ? itemIdFromCode(row.item_code) : toNumber(row.item_id, -1),
     }));
 
-    const [coinRows] = await conn.query(
-      `SELECT *
-       FROM bando_coin_trades
-       WHERE type = 'sell_xu'
-         AND status = 'awaiting_trade'
-         AND game_name = ?
-         AND (? = '' OR server_name = ?)
-       ORDER BY created_at ASC, id ASC
-       LIMIT 30`,
-      [gameName, serverName, serverName],
-    );
-    deliveries.push(...coinRows.map((row) => toCoinReceiveDeliveryJob(mapCoinTrade(row))));
     return deliveries;
   });
 }
@@ -2085,26 +2073,6 @@ function bankAccountFromColumns(row) {
     bankCode: String(row.bank_code ?? ""),
     accountNumber,
     accountName,
-  };
-}
-
-function toCoinReceiveDeliveryJob(trade) {
-  return {
-    deliveryId: trade.id,
-    deliveryKind: "coin_trade",
-    type: "receive_coin",
-    orderCode: trade.orderCode,
-    paymentCode: trade.paymentCode || "",
-    characterName: trade.characterName,
-    gameName: trade.gameName,
-    serverName: trade.serverName,
-    itemCode: COIN_ITEM_CODE,
-    itemId: -1,
-    itemName: COIN_ITEM_NAME,
-    quantity: trade.coinAmount,
-    coinAmount: trade.coinAmount,
-    totalAmount: trade.totalAmount,
-    rate: trade.rate,
   };
 }
 
